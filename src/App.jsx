@@ -236,12 +236,11 @@ export default function App() {
   const [adminCode,      setAdminCode]      = useState(()=>localStorage.getItem("bi-admin-code")||"");
   const [adminToken,     setAdminToken]     = useState(()=>localStorage.getItem("bi-admin-token")||"");
   const [appLocked,      setAppLocked]      = useState({ locked:false, message:"" });
-  const [locationAgreed, setLocationAgreed] = useState(()=>localStorage.getItem("bi-loc-agreed")==="true");
-  const [showLocModal,   setShowLocModal]   = useState(false);
   const [accessLogs,     setAccessLogs]     = useState([]);
   const [logsLoading,    setLogsLoading]    = useState(false);
   const [lockMsg,        setLockMsg]        = useState("");
   const [lockingApp,     setLockingApp]     = useState(false);
+  const [locationGate,   setLocationGate]   = useState("idle"); // idle|checking|granted|denied
   const [kmzListName,   setKmzListName]   = useState("My Map Pins");
   const [kmzImporting,  setKmzImporting]  = useState(false);
   const [manualAddrInput, setManualAddrInput] = useState("");
@@ -683,44 +682,59 @@ export default function App() {
   }, [lockMsg, toast]);
 
   // ── Auth helpers ─────────────────────────────────────────────────────────
+  const requestLocation = useCallback((mode) => {
+    setLocationGate("checking");
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        logAccess(mode, pos.coords.latitude, pos.coords.longitude, Math.round(pos.coords.accuracy));
+        setLocationGate("granted");
+      },
+      err => {
+        // Denied or unavailable — block app
+        setLocationGate("denied");
+      },
+      { enableHighAccuracy:true, timeout:15000, maximumAge:0 }
+    );
+  }, [logAccess]);
+
   const tryAuth = useCallback((code) => {
     const storedAdmin = localStorage.getItem("bi-admin-code") || "";
     if (storedAdmin && code === storedAdmin) {
       sessionStorage.setItem("bi-auth","admin");
       setAuthMode("admin");
-      setShowLocModal(true); // ask for location after auth
+      requestLocation("admin");
       return;
     }
     if (code === EDITOR_CODE) {
       sessionStorage.setItem("bi-auth","editor");
       setAuthMode("editor");
-      setShowLocModal(true);
+      requestLocation("editor");
       return;
     }
     if (code === VIEWER_CODE) {
       sessionStorage.setItem("bi-auth","viewer");
       setAuthMode("viewer");
-      setShowLocModal(true);
+      requestLocation("viewer");
       return;
     }
     setAuthError("Incorrect code — try again");
-  }, []);
+  }, [requestLocation]);
 
-  const agreeLocation = useCallback(() => {
-    localStorage.setItem("bi-loc-agreed","true");
-    setLocationAgreed(true);
-    setShowLocModal(false);
-    navigator.geolocation.getCurrentPosition(
-      pos => logAccess(authMode, pos.coords.latitude, pos.coords.longitude, Math.round(pos.coords.accuracy)),
-      ()  => logAccess(authMode, null, null, null),
-      { enableHighAccuracy:true, timeout:8000 }
-    );
-  }, [authMode, logAccess]);
+  // Re-check location on retry
+  const retryLocation = useCallback(() => {
+    const mode = sessionStorage.getItem("bi-auth") || "viewer";
+    requestLocation(mode);
+  }, [requestLocation]);
 
-  const declineLocation = useCallback(() => {
-    setShowLocModal(false);
-    logAccess(authMode, null, null, null);
-  }, [authMode, logAccess]);
+
+
+  // Re-request location for returning authed sessions (new session = sessionStorage cleared by browser)
+  useEffect(() => {
+    const stored = sessionStorage.getItem("bi-auth");
+    if (stored && locationGate === "idle") {
+      requestLocation(stored);
+    }
+  }, []); // eslint-disable-line
 
   const isAdmin  = authMode === "admin";
   const isEditor = authMode === "editor" || authMode === "admin";
@@ -869,6 +883,70 @@ export default function App() {
   );
 
   // ════════════════════════════════════════════════════════════════════════════
+  // LOCATION GATE SCREENS
+  // ════════════════════════════════════════════════════════════════════════════
+  if (authMode !== "locked" && locationGate === "checking") return (
+    <div style={{display:"flex",height:"100vh",background:"#060d18",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16,fontFamily:"'Figtree',sans-serif",padding:20,textAlign:"center"}}>
+      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:32,color:"#d8eaff",letterSpacing:3}}>BUILDING INTEL</div>
+      <div style={{fontSize:48,animation:"spin 2s linear infinite"}}>📡</div>
+      <div style={{color:"#3a5a78",fontSize:14,fontWeight:600}}>Requesting your location…</div>
+      <div style={{color:"#1e3a5c",fontSize:12,fontFamily:"'JetBrains Mono',monospace"}}>Please allow location access when prompted</div>
+      <style>{`@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+
+  if (authMode !== "locked" && locationGate === "denied") return (
+    <div style={{display:"flex",height:"100vh",background:"#060d18",alignItems:"center",justifyContent:"center",fontFamily:"'Figtree',sans-serif",padding:24,boxSizing:"border-box"}}>
+      <div style={{maxWidth:380,width:"100%",textAlign:"center"}}>
+        <div style={{fontSize:52,marginBottom:12}}>🚫</div>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:28,color:"#ff4d4d",letterSpacing:2,marginBottom:8}}>LOCATION REQUIRED</div>
+        <div style={{color:"#3a5a78",fontSize:14,lineHeight:1.6,marginBottom:24}}>
+          This app requires location access to function. You must enable it to continue.
+        </div>
+
+        <div style={{background:"#0c1828",border:"1px solid #1e3a5c",borderRadius:12,padding:"16px 18px",marginBottom:20,textAlign:"left"}}>
+          <div style={{color:"#ff6b35",fontSize:12,fontWeight:700,marginBottom:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1}}>HOW TO ENABLE LOCATION</div>
+
+          <div style={{color:"#3a5a78",fontSize:12,fontWeight:700,marginBottom:6}}>Android (Chrome)</div>
+          <div style={{color:"#2a4a6a",fontSize:12,lineHeight:1.6,marginBottom:12}}>
+            Tap the 🔒 lock icon in the address bar → Permissions → Location → Allow
+          </div>
+
+          <div style={{color:"#3a5a78",fontSize:12,fontWeight:700,marginBottom:6}}>iPhone (Safari)</div>
+          <div style={{color:"#2a4a6a",fontSize:12,lineHeight:1.6,marginBottom:12}}>
+            Settings → Safari → Location → Allow While Using App — then return here
+          </div>
+
+          <div style={{color:"#3a5a78",fontSize:12,fontWeight:700,marginBottom:6}}>iPhone (Chrome)</div>
+          <div style={{color:"#2a4a6a",fontSize:12,lineHeight:1.6}}>
+            Settings → Chrome → Location → Allow While Using App — then return here
+          </div>
+        </div>
+
+        <button onClick={retryLocation} style={{
+          width:"100%",background:"linear-gradient(135deg,#ff6b35,#e55a26)",
+          border:"none",borderRadius:12,color:"#fff",padding:"16px",
+          cursor:"pointer",fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:2,
+          marginBottom:12
+        }}>I'VE ENABLED IT — TRY AGAIN</button>
+
+        <button onClick={()=>{sessionStorage.removeItem("bi-auth");setAuthMode("locked");setLocationGate("idle");}} style={{
+          background:"none",border:"none",color:"#1e3a5c",fontSize:12,cursor:"pointer",
+          fontFamily:"'JetBrains Mono',monospace"
+        }}>← Back to login</button>
+      </div>
+    </div>
+  );
+
+  // Block app if location not yet granted (still idle after auth = returning session loading)
+  if (authMode !== "locked" && locationGate !== "granted") return (
+    <div style={{display:"flex",height:"100vh",background:"#060d18",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12,fontFamily:"'Figtree',sans-serif"}}>
+      <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:28,color:"#d8eaff",letterSpacing:3}}>BUILDING INTEL</div>
+      <div style={{color:"#1e3a5c",fontSize:12,fontFamily:"'JetBrains Mono',monospace"}}>Verifying location…</div>
+    </div>
+  );
+
+  // ════════════════════════════════════════════════════════════════════════════
   // LOADING SCREEN
   // ════════════════════════════════════════════════════════════════════════════
   if (phase === "loading") return (
@@ -969,26 +1047,6 @@ export default function App() {
       {/* ══ FULL-SCREEN MAP ═══════════════════════════════════════════════════ */}
       <div ref={mapRef} style={{position:"absolute",inset:0,zIndex:0}}
         onClick={()=>setDrawerOpen(false)}/>
-
-      {/* ══ LOCATION AGREEMENT MODAL ════════════════════════════════════════ */}
-      {showLocModal&&(
-        <div style={{position:"fixed",inset:0,zIndex:3000,background:"rgba(0,0,0,.8)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-          <div style={{background:"#0c1828",border:"1px solid #1e3a5c",borderRadius:16,padding:"24px 22px",maxWidth:340,width:"100%",fontFamily:"'Figtree',sans-serif"}}>
-            <div style={{fontSize:36,textAlign:"center",marginBottom:10}}>📍</div>
-            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:"#d8eaff",letterSpacing:2,textAlign:"center",marginBottom:10}}>LOCATION SERVICES</div>
-            <div style={{color:"#3a5a78",fontSize:13,lineHeight:1.6,marginBottom:16,textAlign:"center"}}>
-              This app would like to record your GPS location when you access it. Your coordinates will be logged and visible to the app administrator.
-            </div>
-            <div style={{background:"#07101e",borderRadius:8,padding:"10px 12px",marginBottom:18}}>
-              <div style={{color:"#2a4a6a",fontSize:11,lineHeight:1.5}}>By tapping <strong style={{color:"#ff6b35"}}>Agree</strong>, you consent to your location being logged each time you open this app.</div>
-            </div>
-            <div style={{display:"flex",gap:10}}>
-              <button onClick={agreeLocation} style={{flex:2,background:"#ff6b35",border:"none",borderRadius:10,color:"#fff",padding:"13px",cursor:"pointer",fontFamily:"'Bebas Neue',sans-serif",fontSize:16,letterSpacing:1.5}}>AGREE</button>
-              <button onClick={declineLocation} style={{flex:1,background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:10,color:"#3a5a78",padding:"13px",cursor:"pointer",fontSize:13}}>Decline</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ══ TOP BAR ════════════════════════════════════════════════════════════ */}
       <div style={{
