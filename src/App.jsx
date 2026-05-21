@@ -427,7 +427,7 @@ export default function App() {
           {[
             ["1","Go to myaccount.google.com"],
             ["2","Data & Privacy → Download your data"],
-            ["3","Select only "Saved" under Google Maps"],
+            ["3","Select only 'Saved' under Google Maps"],
             ["4","Download the .zip — then upload it here"],
           ].map(([n,s])=>(
             <div key={n} style={{display:"flex",gap:12,marginBottom:8,alignItems:"flex-start"}}>
