@@ -162,6 +162,7 @@ export default function App() {
   const [editPin,       setEditPin]       = useState(null); // index of pin being edited
   const [mapStyle,      setMapStyle]      = useState("satellite"); // satellite|streets|dark
   const [drawerOpen,    setDrawerOpen]    = useState(false);
+  const [geocodeState,  setGeocodeState]  = useState(null); // { listName, pending[], index, result, loading }
 
   const mapRef        = useRef(null);
   const leafletMap    = useRef(null);
@@ -170,6 +171,7 @@ export default function App() {
   const roadsideGrp   = useRef(null);
   const newsLayers    = useRef({});
   const fileInputRef  = useRef(null);
+  const touchStartY   = useRef(null);
 
   // ── Load external scripts ────────────────────────────────────────────────
   useEffect(() => {
@@ -217,15 +219,24 @@ export default function App() {
   useEffect(() => { window.storage.set("bi-roadside-v4", JSON.stringify(roadsidePins)).catch(()=>{}); }, [roadsidePins]);
   useEffect(() => { if (Object.keys(newsResults).length) window.storage.set("bi-news-v4", JSON.stringify(newsResults)).catch(()=>{}); }, [newsResults]);
 
-  // ── Init map ─────────────────────────────────────────────────────────────
+  // ── Init map (retry until Leaflet + DOM both ready) ─────────────────────
   useEffect(() => {
-    if (phase !== "app" || !mapRef.current || leafletMap.current || !window.L) return;
-    const L   = window.L;
-    const map = L.map(mapRef.current, { center:[39.5,-98.35], zoom:4 });
-    const tl  = TILE_LAYERS.satellite;
-    baseTileRef.current = L.tileLayer(tl.url, { attribution:tl.attribution, maxZoom:22, tileSize:256 }).addTo(map);
-    leafletMap.current  = map;
-    roadsideGrp.current = L.markerClusterGroup({ maxClusterRadius:50 }).addTo(map);
+    if (phase !== "app") return;
+    let attempts = 0;
+    const tryInit = () => {
+      if (leafletMap.current) return;
+      if (!mapRef.current || !window.L || !window.L.markerClusterGroup) {
+        if (++attempts < 30) setTimeout(tryInit, 150);
+        return;
+      }
+      const L   = window.L;
+      const map = L.map(mapRef.current, { center:[39.5,-98.35], zoom:4 });
+      const tl  = TILE_LAYERS.satellite;
+      baseTileRef.current = L.tileLayer(tl.url, { attribution:tl.attribution, maxZoom:22, tileSize:256 }).addTo(map);
+      leafletMap.current  = map;
+      roadsideGrp.current = L.markerClusterGroup({ maxClusterRadius:50 }).addTo(map);
+    };
+    tryInit();
   }, [phase]);
 
   // ── Swap base tile layer when mapStyle changes ────────────────────────────
@@ -342,6 +353,64 @@ export default function App() {
     finally { setImporting(false); setImportMsg(""); }
   }, [toast]);
 
+  // ── Geocode unplaced pins for a list ─────────────────────────────────────
+  const startGeocode = useCallback((listName) => {
+    const pending = lists[listName]?.pending || [];
+    if (!pending.length) return;
+    setGeocodeState({ listName, pending, index:0, result:null, loading:true, placed:0, skipped:0 });
+    geocodePin(listName, pending, 0);
+  }, [lists]);
+
+  const geocodePin = useCallback(async (listName, pending, index) => {
+    if (index >= pending.length) {
+      setGeocodeState(g => g ? { ...g, loading:false, done:true } : null);
+      return;
+    }
+    const pin = pending[index];
+    setGeocodeState(g => g ? { ...g, index, loading:true, result:null } : null);
+    try {
+      const q = encodeURIComponent(pin.title + ", United States");
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${q}&limit=1`, {
+        headers:{"User-Agent":"BuildingIntelApp/1.0"}
+      });
+      const data = await res.json();
+      setGeocodeState(g => g ? { ...g, loading:false, result: data[0]||null } : null);
+    } catch {
+      setGeocodeState(g => g ? { ...g, loading:false, result:null } : null);
+    }
+  }, []);
+
+  const acceptGeocodeResult = useCallback(() => {
+    setGeocodeState(g => {
+      if (!g || !g.result) return g;
+      const { listName, pending, index, result } = g;
+      const pin = pending[index];
+      const newEntry = { title:pin.title, note:pin.note, lat:+result.lat, lng:+result.lon, url:pin.url };
+      setLists(prev => {
+        const list = prev[listName];
+        const newPending = list.pending.filter((_,i)=>i!==index);
+        return { ...prev, [listName]: { ...list, ready:[...(list.ready||[]), newEntry], pending:newPending } };
+      });
+      const newPending = pending.filter((_,i)=>i!==index);
+      const newIndex = index < newPending.length ? index : newPending.length-1;
+      if (newPending.length === 0) return { ...g, pending:[], done:true, placed:(g.placed||0)+1 };
+      const next = { ...g, pending:newPending, index:newIndex, placed:(g.placed||0)+1, loading:true, result:null };
+      setTimeout(() => geocodePin(listName, newPending, newIndex), 1200);
+      return next;
+    });
+  }, [geocodePin]);
+
+  const skipGeocodeResult = useCallback(() => {
+    setGeocodeState(g => {
+      if (!g) return null;
+      const { listName, pending, index } = g;
+      const nextIndex = index + 1;
+      if (nextIndex >= pending.length) return { ...g, done:true, skipped:(g.skipped||0)+1 };
+      setTimeout(() => geocodePin(listName, pending, nextIndex), 1200);
+      return { ...g, index:nextIndex, loading:true, result:null, skipped:(g.skipped||0)+1 };
+    });
+  }, [geocodePin]);
+
   // ── News scan ─────────────────────────────────────────────────────────────
   const runScan = useCallback(async () => {
     if (scanning || !scanLocation.trim()) return;
@@ -352,7 +421,7 @@ export default function App() {
       const res  = await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST", headers:{"Content-Type":"application/json","x-api-key":apiKey.trim(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
         body:JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1000,
+          model:"claude-sonnet-4-6", max_tokens:1000,
           tools:[{type:"web_search_20250305",name:"web_search"}],
           system:`You are a property intelligence agent. Find recent news (2024-2026) about ${cat.desc} in ${scanLocation}. Your FINAL response must be ONLY a raw JSON array. Each object: {title,url,date(YYYY-MM-DD),address,city,state,incident_type,description}. Only include entries with a specific street address. Max 6 results, newest first.`,
           messages:[{role:"user",content:`Search for recent news about ${cat.desc} in ${scanLocation}.`}]
@@ -623,7 +692,16 @@ export default function App() {
       )}
 
       {/* ══ BOTTOM DRAWER ═════════════════════════════════════════════════════ */}
-      <div style={{
+      <div
+        onTouchStart={e=>{ touchStartY.current = e.touches[0].clientY; }}
+        onTouchEnd={e=>{
+          if (touchStartY.current === null) return;
+          const dy = touchStartY.current - e.changedTouches[0].clientY;
+          if (dy > 40) setDrawerOpen(true);
+          else if (dy < -40) setDrawerOpen(false);
+          touchStartY.current = null;
+        }}
+        style={{
         position:"absolute",bottom:0,left:0,right:0,zIndex:800,
         background:"#07101e",
         borderRadius:"20px 20px 0 0",
@@ -704,14 +782,88 @@ export default function App() {
                     </div>
                     {rc>0&&<span style={{background:on?data.color:"#1a3050",color:on?"#000":"#2a4a6a",fontSize:11,fontWeight:800,padding:"2px 9px",borderRadius:10,flexShrink:0}}>{rc}</span>}
                   </div>
+                  {pc>0&&!geocodeState&&(
+                    <button onClick={e=>{e.stopPropagation();setDrawerOpen(true);startGeocode(name);}} style={{
+                      marginTop:5,width:"100%",background:"transparent",
+                      border:`1px dashed ${data.color}55`,borderRadius:7,
+                      color:data.color,padding:"6px",cursor:"pointer",
+                      fontSize:11,fontFamily:"'JetBrains Mono',monospace"
+                    }}>
+                      📍 Place {pc} unplaced pins
+                    </button>
+                  )}
                 );
               })}
 
-              {Object.keys(lists).length>0&&(
+              {/* Geocode panel */}
+              {geocodeState && (
+                <div style={{background:"#0b1828",border:`1px solid ${geocodeState.done?"#4ade80":"#ff6b35"}`,borderRadius:12,padding:"14px 16px",marginTop:8}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:15,color:"#d8eaff",letterSpacing:1.5}}>
+                      PLACING: {geocodeState.listName.split(" ")[0].toUpperCase()}
+                    </div>
+                    <button onClick={()=>setGeocodeState(null)} style={{background:"none",border:"none",color:"#2a4a6a",fontSize:18,cursor:"pointer"}}>✕</button>
+                  </div>
+
+                  {geocodeState.done ? (
+                    <div style={{textAlign:"center",padding:"8px 0"}}>
+                      <div style={{color:"#4ade80",fontSize:14,fontWeight:700,marginBottom:4}}>✓ Done!</div>
+                      <div style={{color:"#3a5a78",fontSize:12}}>Placed: {geocodeState.placed||0} · Skipped: {geocodeState.skipped||0}</div>
+                      <button onClick={()=>setGeocodeState(null)} style={{marginTop:10,background:"#4ade80",border:"none",borderRadius:8,color:"#003300",padding:"8px 20px",cursor:"pointer",fontWeight:700,fontSize:13}}>Close</button>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",marginBottom:6}}>
+                        {geocodeState.index+1} of {geocodeState.pending.length} · ✓{geocodeState.placed||0} placed · ↷{geocodeState.skipped||0} skipped
+                      </div>
+
+                      {/* Current pin being looked up */}
+                      <div style={{background:"#07101e",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
+                        <div style={{color:"#c0d8f0",fontSize:13,fontWeight:600,marginBottom:4}}>
+                          {geocodeState.pending[geocodeState.index]?.title}
+                        </div>
+                        {geocodeState.pending[geocodeState.index]?.note && (
+                          <div style={{color:"#2a4a6a",fontSize:11}}>{geocodeState.pending[geocodeState.index].note}</div>
+                        )}
+                      </div>
+
+                      {/* Result */}
+                      {geocodeState.loading ? (
+                        <div style={{color:"#2a4a6a",fontSize:12,fontFamily:"'JetBrains Mono',monospace",padding:"6px 0"}}>🔍 Looking up location…</div>
+                      ) : geocodeState.result ? (
+                        <div>
+                          <div style={{background:"#071a0f",border:"1px solid #00e67633",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
+                            <div style={{color:"#00c853",fontSize:11,fontWeight:700,marginBottom:2}}>✓ Found a match</div>
+                            <div style={{color:"#3a5a78",fontSize:12,lineHeight:1.4}}>{geocodeState.result.display_name}</div>
+                          </div>
+                          <div style={{display:"flex",gap:8}}>
+                            <button onClick={acceptGeocodeResult} style={{flex:1,background:"#00e676",border:"none",borderRadius:8,color:"#003300",padding:"10px",cursor:"pointer",fontWeight:700,fontSize:13}}>
+                              ✓ Place It
+                            </button>
+                            <button onClick={skipGeocodeResult} style={{flex:1,background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#3a5a78",padding:"10px",cursor:"pointer",fontSize:13}}>
+                              Skip →
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div style={{background:"#1a0505",border:"1px solid #ff4d4d33",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
+                            <div style={{color:"#ff4d4d",fontSize:11,fontWeight:700}}>✗ Couldn't find this location</div>
+                          </div>
+                          <button onClick={skipGeocodeResult} style={{width:"100%",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#3a5a78",padding:"10px",cursor:"pointer",fontSize:13}}>
+                            Skip →
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {Object.keys(lists).length>0&&!geocodeState&&(
                 <div style={{marginTop:8,padding:"10px 14px",background:"#090f1c",borderRadius:8,border:"1px solid #0f1e30"}}>
                   <div style={{color:"#2a4a6a",fontSize:11,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.5}}>
-                    💡 <strong style={{color:"#3a5a78"}}>What is "not yet placed"?</strong><br/>
-                    These pins were saved in Google Maps by name (like a business or address) rather than as a dropped GPS pin, so we don't have their exact coordinates yet. Tap a list to toggle it on/off on the map.
+                    💡 <strong style={{color:"#3a5a78"}}>Not yet placed</strong> = saved by name in Google Maps without GPS. Tap <strong style={{color:"#ff6b35"}}>Place Unplaced</strong> on any list to look them up and put them on the map.
                   </div>
                 </div>
               )}
