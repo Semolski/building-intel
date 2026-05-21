@@ -162,16 +162,19 @@ export default function App() {
   const [editPin,       setEditPin]       = useState(null); // index of pin being edited
   const [mapStyle,      setMapStyle]      = useState("satellite"); // satellite|streets|dark
   const [drawerOpen,    setDrawerOpen]    = useState(false);
-  const [geocodeState,  setGeocodeState]  = useState(null); // { listName, pending[], index, result, loading }
+  const [geocodeState,  setGeocodeState]  = useState(null);
+  const [refiningPin,   setRefiningPin]   = useState(null); // roadside index being drag-refined
 
-  const mapRef        = useRef(null);
-  const leafletMap    = useRef(null);
-  const baseTileRef   = useRef(null);   // active base tile layer
-  const layerGroups   = useRef({});     // { listName: L.MarkerClusterGroup }
-  const roadsideGrp   = useRef(null);
-  const newsLayers    = useRef({});
-  const fileInputRef  = useRef(null);
-  const touchStartY   = useRef(null);
+  const mapRef           = useRef(null);
+  const leafletMap       = useRef(null);
+  const baseTileRef      = useRef(null);
+  const layerGroups      = useRef({});
+  const roadsideGrp      = useRef(null);
+  const newsLayers       = useRef({});
+  const fileInputRef     = useRef(null);
+  const touchStartY      = useRef(null);
+  const refineMarkerRef  = useRef(null);  // draggable marker during pin refinement
+  const previewMarkerRef = useRef(null);  // temp marker during geocode preview
 
   // ── Load external scripts ────────────────────────────────────────────────
   useEffect(() => {
@@ -353,6 +356,66 @@ export default function App() {
     finally { setImporting(false); setImportMsg(""); }
   }, [toast]);
 
+  // ── Roadside pin drag-refinement ─────────────────────────────────────────
+  const startRefinePin = useCallback((index) => {
+    const pin = roadsidePins[index];
+    if (!pin?.lat || !leafletMap.current || !window.L) return;
+    const L = window.L, map = leafletMap.current;
+    setRefiningPin(index);
+    setDrawerOpen(false);
+    map.flyTo([pin.lat, pin.lng], 19, { duration: 1.3 });
+    if (refineMarkerRef.current) map.removeLayer(refineMarkerRef.current);
+    const icon = L.divIcon({
+      html:`<div style="position:relative;width:50px;height:50px">
+        <div style="width:50px;height:50px;background:#00e676;border-radius:50%;border:3px solid #fff;
+          box-shadow:0 0 0 4px rgba(0,230,118,.4),0 4px 20px rgba(0,0,0,.5);
+          animation:refine-pulse 1.2s ease-in-out infinite"></div>
+        <span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-52%);font-size:22px">📍</span>
+      </div>`,
+      className:'', iconSize:[50,50], iconAnchor:[25,25]
+    });
+    const m = L.marker([pin.lat, pin.lng], { icon, draggable: true }).addTo(map);
+    refineMarkerRef.current = m;
+  }, [roadsidePins]);
+
+  const finishRefinePin = useCallback(() => {
+    if (refiningPin === null || !refineMarkerRef.current) return;
+    const pos = refineMarkerRef.current.getLatLng();
+    setRoadsidePins(prev => prev.map((p,i) => i===refiningPin ? {...p, lat:pos.lat, lng:pos.lng, refined:true} : p));
+    if (leafletMap.current) leafletMap.current.removeLayer(refineMarkerRef.current);
+    refineMarkerRef.current = null;
+    setRefiningPin(null);
+    setDrawerOpen(true);
+    setActiveTab("roadside");
+  }, [refiningPin]);
+
+  const cancelRefinePin = useCallback(() => {
+    if (refineMarkerRef.current && leafletMap.current) leafletMap.current.removeLayer(refineMarkerRef.current);
+    refineMarkerRef.current = null;
+    setRefiningPin(null);
+  }, []);
+
+  // ── Preview a geocode result on the map ────────────────────────────────────
+  const previewGeocodeResult = useCallback((result) => {
+    if (!leafletMap.current || !window.L) return;
+    const L = window.L, map = leafletMap.current;
+    const lat = +result.lat, lng = +result.lon;
+    if (previewMarkerRef.current) map.removeLayer(previewMarkerRef.current);
+    const icon = L.divIcon({
+      html:`<div style="width:28px;height:28px;background:#ff6b35;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,.5)"></div>`,
+      className:'', iconSize:[28,28], iconAnchor:[14,28]
+    });
+    previewMarkerRef.current = L.marker([lat, lng], { icon }).addTo(map);
+    map.flyTo([lat, lng], 17, { duration: 1 });
+  }, []);
+
+  const clearPreviewMarker = useCallback(() => {
+    if (previewMarkerRef.current && leafletMap.current) {
+      leafletMap.current.removeLayer(previewMarkerRef.current);
+      previewMarkerRef.current = null;
+    }
+  }, []);
+
   // ── Geocode unplaced pins for a list ─────────────────────────────────────
   const startGeocode = useCallback((listName) => {
     const pending = lists[listName]?.pending || [];
@@ -370,20 +433,21 @@ export default function App() {
     setGeocodeState(g => g ? { ...g, index, loading:true, result:null } : null);
     try {
       const q = encodeURIComponent(pin.title + ", United States");
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${q}&limit=1`, {
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${q}&limit=5&addressdetails=1`, {
         headers:{"User-Agent":"BuildingIntelApp/1.0"}
       });
       const data = await res.json();
-      setGeocodeState(g => g ? { ...g, loading:false, result: data[0]||null } : null);
+      setGeocodeState(g => g ? { ...g, loading:false, results: data||[], selectedIdx:null } : null);
     } catch {
-      setGeocodeState(g => g ? { ...g, loading:false, result:null } : null);
+      setGeocodeState(g => g ? { ...g, loading:false, results:[], selectedIdx:null } : null);
     }
   }, []);
 
-  const acceptGeocodeResult = useCallback(() => {
+  const acceptGeocodeResult = useCallback((result) => {
+    clearPreviewMarker();
     setGeocodeState(g => {
-      if (!g || !g.result) return g;
-      const { listName, pending, index, result } = g;
+      if (!g || !result) return g;
+      const { listName, pending, index } = g;
       const pin = pending[index];
       const newEntry = { title:pin.title, note:pin.note, lat:+result.lat, lng:+result.lon, url:pin.url };
       setLists(prev => {
@@ -392,24 +456,25 @@ export default function App() {
         return { ...prev, [listName]: { ...list, ready:[...(list.ready||[]), newEntry], pending:newPending } };
       });
       const newPending = pending.filter((_,i)=>i!==index);
-      const newIndex = index < newPending.length ? index : newPending.length-1;
       if (newPending.length === 0) return { ...g, pending:[], done:true, placed:(g.placed||0)+1 };
-      const next = { ...g, pending:newPending, index:newIndex, placed:(g.placed||0)+1, loading:true, result:null };
+      const newIndex = Math.min(index, newPending.length-1);
+      const next = { ...g, pending:newPending, index:newIndex, placed:(g.placed||0)+1, loading:true, results:[], selectedIdx:null };
       setTimeout(() => geocodePin(listName, newPending, newIndex), 1200);
       return next;
     });
-  }, [geocodePin]);
+  }, [geocodePin, clearPreviewMarker]);
 
   const skipGeocodeResult = useCallback(() => {
+    clearPreviewMarker();
     setGeocodeState(g => {
       if (!g) return null;
       const { listName, pending, index } = g;
       const nextIndex = index + 1;
       if (nextIndex >= pending.length) return { ...g, done:true, skipped:(g.skipped||0)+1 };
       setTimeout(() => geocodePin(listName, pending, nextIndex), 1200);
-      return { ...g, index:nextIndex, loading:true, result:null, skipped:(g.skipped||0)+1 };
+      return { ...g, index:nextIndex, loading:true, results:[], selectedIdx:null, skipped:(g.skipped||0)+1 };
     });
-  }, [geocodePin]);
+  }, [geocodePin, clearPreviewMarker]);
 
   // ── News scan ─────────────────────────────────────────────────────────────
   const runScan = useCallback(async () => {
@@ -421,18 +486,18 @@ export default function App() {
       const res  = await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST", headers:{"Content-Type":"application/json","x-api-key":apiKey.trim(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
         body:JSON.stringify({
-          model:"claude-sonnet-4-6", max_tokens:1000,
+          model:"claude-sonnet-4-6", max_tokens:3000,
           tools:[{type:"web_search_20250305",name:"web_search"}],
-          system:`You are a property intelligence agent. Find recent news (2024-2026) about ${cat.desc} in ${scanLocation}. Your FINAL response must be ONLY a raw JSON array. Each object: {title,url,date(YYYY-MM-DD),address,city,state,incident_type,description}. Only include entries with a specific street address. Max 6 results, newest first.`,
-          messages:[{role:"user",content:`Search for recent news about ${cat.desc} in ${scanLocation}.`}]
+          system:`You are a property intelligence agent. Search broadly for recent news (2023-2026) about ${cat.desc} in ${scanLocation}. Do multiple searches to find 20 results. Your FINAL response must be ONLY a raw JSON array — no markdown, no explanation. Each object must have: title, url, date (YYYY-MM-DD or partial), address (street number + name, or just intersection if no number), city, state (2-letter), incident_type (short label), description (2 sentences). Include results even if address is approximate — a cross-street or neighborhood is acceptable. Aim for 20 results, newest first.`,
+          messages:[{role:"user",content:`Search for recent news about ${cat.desc} in ${scanLocation}. Do multiple searches across different cities and regions to find 20 diverse results with location information.`}]
         })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error.message);
       const text  = data.content.filter(b=>b.type==="text").map(b=>b.text).join("");
-      const match = text.match(/\[[\s\S]*?\]/);
-      if (!match) throw new Error("No results — try a more specific city/state");
-      let results = JSON.parse(match[0]).slice(0,6);
+      const match = text.match(/\[[\s\S]*\]/);
+      if (!match) throw new Error("No results returned — check your API key or try a specific city");
+      let results = JSON.parse(match[0]).slice(0,20);
       setScanStatus(`Found ${results.length}. Geocoding…`);
 
       for (let i=0;i<results.length;i++) {
@@ -654,6 +719,40 @@ export default function App() {
         </div>
       )}
 
+      {/* ══ REFINE MODE OVERLAY ══════════════════════════════════════════════ */}
+      {refiningPin !== null && (
+        <div style={{
+          position:"absolute",top:0,left:0,right:0,bottom:0,zIndex:1600,
+          pointerEvents:"none"
+        }}>
+          {/* Instruction banner */}
+          <div style={{
+            position:"absolute",top:70,left:"50%",transform:"translateX(-50%)",
+            background:"rgba(6,13,24,.92)",border:"1px solid #ff6b35",
+            borderRadius:12,padding:"10px 20px",textAlign:"center",
+            pointerEvents:"none",backdropFilter:"blur(8px)"
+          }}>
+            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:"#ff6b35",letterSpacing:1.5}}>DRAG PIN TO EXACT LOCATION</div>
+            <div style={{color:"#3a5a78",fontSize:11,fontFamily:"'JetBrains Mono',monospace"}}>Move the green pin to the exact building</div>
+          </div>
+          {/* Confirm / Cancel */}
+          <div style={{position:"absolute",bottom:110,left:"50%",transform:"translateX(-50%)",display:"flex",gap:12,pointerEvents:"auto"}}>
+            <button onClick={finishRefinePin} style={{
+              background:"#00e676",border:"none",borderRadius:12,
+              color:"#003300",padding:"14px 28px",cursor:"pointer",
+              fontFamily:"'Bebas Neue',sans-serif",fontSize:18,letterSpacing:2,
+              boxShadow:"0 4px 20px rgba(0,230,118,.5)"
+            }}>✓ CONFIRM POSITION</button>
+            <button onClick={cancelRefinePin} style={{
+              background:"rgba(6,13,24,.85)",border:"1px solid #ff4d4d",
+              borderRadius:12,color:"#ff4d4d",padding:"14px 20px",cursor:"pointer",
+              fontFamily:"'Bebas Neue',sans-serif",fontSize:18,letterSpacing:2,
+              backdropFilter:"blur(8px)"
+            }}>✕ CANCEL</button>
+          </div>
+        </div>
+      )}
+
       {/* ══ ROADSIDE SAVE BUTTON ══════════════════════════════════════════════ */}
       <button onClick={e=>{e.stopPropagation();saveRoadside();}} disabled={gpsLoading} style={{
         position:"absolute",
@@ -831,26 +930,47 @@ export default function App() {
 
                       {/* Result */}
                       {geocodeState.loading ? (
-                        <div style={{color:"#2a4a6a",fontSize:12,fontFamily:"'JetBrains Mono',monospace",padding:"6px 0"}}>🔍 Looking up location…</div>
-                      ) : geocodeState.result ? (
+                        <div style={{color:"#2a4a6a",fontSize:12,fontFamily:"'JetBrains Mono',monospace",padding:"6px 0"}}>🔍 Searching for matches…</div>
+                      ) : geocodeState.results?.length > 0 ? (
                         <div>
-                          <div style={{background:"#071a0f",border:"1px solid #00e67633",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
-                            <div style={{color:"#00c853",fontSize:11,fontWeight:700,marginBottom:2}}>✓ Found a match</div>
-                            <div style={{color:"#3a5a78",fontSize:12,lineHeight:1.4}}>{geocodeState.result.display_name}</div>
+                          <div style={{color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",marginBottom:6}}>
+                            {geocodeState.results.length} match{geocodeState.results.length>1?"es":""} found — tap one to preview on map, then place it
                           </div>
-                          <div style={{display:"flex",gap:8}}>
-                            <button onClick={acceptGeocodeResult} style={{flex:1,background:"#00e676",border:"none",borderRadius:8,color:"#003300",padding:"10px",cursor:"pointer",fontWeight:700,fontSize:13}}>
-                              ✓ Place It
-                            </button>
-                            <button onClick={skipGeocodeResult} style={{flex:1,background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#3a5a78",padding:"10px",cursor:"pointer",fontSize:13}}>
-                              Skip →
-                            </button>
-                          </div>
+                          {geocodeState.results.map((r,ri)=>{
+                            const sel = geocodeState.selectedIdx===ri;
+                            return(
+                              <div key={ri} style={{
+                                background:sel?"#071a0f":"#07101e",
+                                border:`1px solid ${sel?"#00e676":"#1e3a5c"}`,
+                                borderRadius:8,padding:"9px 11px",marginBottom:6,cursor:"pointer"
+                              }} onClick={()=>{
+                                setGeocodeState(g=>({...g,selectedIdx:ri}));
+                                previewGeocodeResult(r);
+                              }}>
+                                <div style={{color:sel?"#00c853":"#8ab0cc",fontSize:11,lineHeight:1.4,marginBottom:sel?6:0}}>{r.display_name}</div>
+                                {sel&&(
+                                  <div style={{display:"flex",gap:6,marginTop:6}}>
+                                    <button onClick={e=>{e.stopPropagation();acceptGeocodeResult(r);}} style={{flex:1,background:"#00e676",border:"none",borderRadius:6,color:"#003300",padding:"7px",cursor:"pointer",fontWeight:700,fontSize:12}}>
+                                      ✓ Place Here
+                                    </button>
+                                    <a href={`https://www.google.com/maps?q=${r.lat},${r.lon}&layer=c&cbll=${r.lat},${r.lon}`} target="_blank" rel="noopener"
+                                      onClick={e=>e.stopPropagation()}
+                                      style={{flex:1,background:"#1a73e8",border:"none",borderRadius:6,color:"#fff",padding:"7px",cursor:"pointer",fontSize:12,textDecoration:"none",textAlign:"center",fontWeight:700}}>
+                                      🌐 Street View
+                                    </a>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          <button onClick={skipGeocodeResult} style={{width:"100%",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#3a5a78",padding:"8px",cursor:"pointer",fontSize:12,marginTop:2}}>
+                            None of these — Skip →
+                          </button>
                         </div>
                       ) : (
                         <div>
-                          <div style={{background:"#1a0505",border:"1px solid #ff4d4d33",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
-                            <div style={{color:"#ff4d4d",fontSize:11,fontWeight:700}}>✗ Couldn't find this location</div>
+                          <div style={{background:"#1a0505",border:"1px solid #ff4d4d33",borderRadius:8,padding:"10px 12px",marginBottom:8}}>
+                            <div style={{color:"#ff4d4d",fontSize:11,fontWeight:700}}>✗ No matches found for this name</div>
                           </div>
                           <button onClick={skipGeocodeResult} style={{width:"100%",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#3a5a78",padding:"10px",cursor:"pointer",fontSize:13}}>
                             Skip →
@@ -992,10 +1112,14 @@ export default function App() {
                       {pin.note&&<div style={{color:"#3a5a78",fontSize:12,marginBottom:3}}>{pin.note}</div>}
                       <div style={{color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace",marginBottom:8}}>{pin.timestamp} · ±{pin.accuracy}m</div>
                       <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                        <button onClick={()=>{if(leafletMap.current){leafletMap.current.flyTo([pin.lat,pin.lng],17,{duration:1.2});setDrawerOpen(false);}}}
+                        <button onClick={()=>{if(leafletMap.current){leafletMap.current.flyTo([pin.lat,pin.lng],18,{duration:1.2});setDrawerOpen(false);}}}
                           style={{background:"#0b1828",border:"1px solid #0f2035",borderRadius:6,color:"#3a5a78",padding:"5px 11px",cursor:"pointer",fontSize:11,fontFamily:"'JetBrains Mono',monospace"}}>🗺 Map</button>
-                        <a href={`https://www.google.com/maps?q=${pin.lat},${pin.lng}`} target="_blank" rel="noopener"
-                          style={{background:"#0b1828",border:"1px solid #00e67630",borderRadius:6,color:"#00c853",padding:"5px 11px",fontSize:11,textDecoration:"none",fontFamily:"'JetBrains Mono',monospace"}}>↗ Street View</a>
+                        <button onClick={()=>startRefinePin(i)}
+                          style={{background:"#0b182888",border:"1px solid #ff6b3555",borderRadius:6,color:"#ff6b35",padding:"5px 11px",cursor:"pointer",fontSize:11,fontFamily:"'JetBrains Mono',monospace"}}>🎯 Refine</button>
+                        <a href={`https://www.google.com/maps?q=${pin.lat},${pin.lng}&layer=c&cbll=${pin.lat},${pin.lng}`} target="_blank" rel="noopener"
+                          style={{background:"#0b1828",border:"1px solid #1a73e833",borderRadius:6,color:"#1a73e8",padding:"5px 11px",fontSize:11,textDecoration:"none",fontFamily:"'JetBrains Mono',monospace"}}>🌐 Street View</a>
+                        <a href={`https://www.google.com/maps/dir/?api=1&destination=${pin.lat},${pin.lng}`} target="_blank" rel="noopener"
+                          style={{background:"#0b1828",border:"1px solid #00e67630",borderRadius:6,color:"#00c853",padding:"5px 11px",fontSize:11,textDecoration:"none",fontFamily:"'JetBrains Mono',monospace"}}>🧭 Nav</a>
                         <button onClick={()=>setEditPin(i)}
                           style={{background:"#0b1828",border:"1px solid #0f2035",borderRadius:6,color:"#3a5a78",padding:"5px 11px",cursor:"pointer",fontSize:11,fontFamily:"'JetBrains Mono',monospace"}}>✏️ Edit</button>
                         <button onClick={()=>setRoadsidePins(p=>p.filter((_,j)=>j!==i))}
@@ -1027,6 +1151,10 @@ export default function App() {
 
       {/* ══ STYLES ════════════════════════════════════════════════════════════ */}
       <style>{`
+        @keyframes refine-pulse {
+          0%,100%{box-shadow:0 0 0 4px rgba(0,230,118,.4),0 4px 20px rgba(0,0,0,.5)}
+          50%{box-shadow:0 0 0 10px rgba(0,230,118,.1),0 4px 20px rgba(0,0,0,.5)}
+        }
         @keyframes roadside-pulse {
           0%,100%{box-shadow:0 4px 28px rgba(0,230,118,.55),0 0 0 7px rgba(0,230,118,.12)}
           50%{box-shadow:0 4px 36px rgba(0,230,118,.85),0 0 0 14px rgba(0,230,118,.06)}
