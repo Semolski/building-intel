@@ -86,21 +86,39 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ─── Popup HTML helpers ───────────────────────────────────────────────────────
 const listPopup = (name, color, entry) => `
-  <div style="font-family:system-ui,sans-serif;min-width:210px;max-width:280px">
+  <div style="font-family:system-ui,sans-serif;min-width:220px;max-width:290px">
     <span style="background:${color}22;color:${color};font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px">${name}</span>
     <div style="font-weight:700;font-size:13px;margin:6px 0 3px;line-height:1.3">${entry.title}</div>
     ${entry.note && entry.note !== entry.title
       ? `<div style="color:#666;font-size:12px;margin-bottom:5px">${entry.note}</div>` : ""}
-    <a href="${entry.url}" target="_blank" style="color:${color};font-size:12px;font-weight:700;text-decoration:none">Open in Google Maps →</a>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+      <a href="https://www.google.com/maps/dir/?api=1&destination=${entry.lat},${entry.lng}" target="_blank"
+        style="background:#1a73e8;color:#fff;font-size:12px;font-weight:700;padding:5px 12px;border-radius:6px;text-decoration:none">
+        🧭 Navigate
+      </a>
+      <a href="${entry.url}" target="_blank"
+        style="background:#222;color:${color};font-size:12px;font-weight:700;padding:5px 12px;border-radius:6px;text-decoration:none;border:1px solid ${color}44">
+        Maps →
+      </a>
+    </div>
   </div>`;
 
 const roadsidePopup = (pin) => `
-  <div style="font-family:system-ui,sans-serif;min-width:210px">
+  <div style="font-family:system-ui,sans-serif;min-width:220px">
     <span style="background:#00e67622;color:#00c853;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px">ROADSIDE FIND</span>
     <div style="font-weight:700;font-size:13px;margin:6px 0 3px">${pin.title}</div>
     ${pin.note ? `<div style="color:#555;font-size:12px;margin-bottom:5px">${pin.note}</div>` : ""}
-    <div style="color:#888;font-size:11px;font-family:monospace;margin-bottom:6px">${pin.timestamp}</div>
-    <a href="https://www.google.com/maps?q=${pin.lat},${pin.lng}" target="_blank" style="color:#00c853;font-size:12px;font-weight:700;text-decoration:none">Street View / Directions →</a>
+    <div style="color:#888;font-size:11px;font-family:monospace;margin-bottom:8px">${pin.timestamp}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <a href="https://www.google.com/maps/dir/?api=1&destination=${pin.lat},${pin.lng}" target="_blank"
+        style="background:#1a73e8;color:#fff;font-size:12px;font-weight:700;padding:5px 12px;border-radius:6px;text-decoration:none">
+        🧭 Navigate
+      </a>
+      <a href="https://www.google.com/maps?q=${pin.lat},${pin.lng}" target="_blank"
+        style="background:#222;color:#00c853;font-size:12px;font-weight:700;padding:5px 12px;border-radius:6px;text-decoration:none;border:1px solid #00e67644">
+        Street View →
+      </a>
+    </div>
   </div>`;
 
 const newsPopup = (r, cat) => `
@@ -108,8 +126,17 @@ const newsPopup = (r, cat) => `
     <span style="background:${cat.color}22;color:${cat.color};font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px">${r.incident_type || cat.label.toUpperCase()}</span>
     <div style="font-weight:700;font-size:13px;margin:6px 0 3px;line-height:1.3">${r.title}</div>
     <div style="color:#555;font-size:11px;font-family:monospace;margin-bottom:5px">📍 ${r.address}, ${r.city}, ${r.state}</div>
-    <div style="color:#444;font-size:12px;margin-bottom:6px;line-height:1.5">${r.description}</div>
-    ${r.url ? `<a href="${r.url}" target="_blank" style="color:${cat.color};font-size:12px;font-weight:700;text-decoration:none">Read Article →</a>` : ""}
+    <div style="color:#444;font-size:12px;margin-bottom:8px;line-height:1.5">${r.description}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${r.lat ? `<a href="https://www.google.com/maps/dir/?api=1&destination=${r.lat},${r.lng}" target="_blank"
+        style="background:#1a73e8;color:#fff;font-size:12px;font-weight:700;padding:5px 12px;border-radius:6px;text-decoration:none">
+        🧭 Navigate
+      </a>` : ""}
+      ${r.url ? `<a href="${r.url}" target="_blank"
+        style="background:#222;color:${cat.color};font-size:12px;font-weight:700;padding:5px 12px;border-radius:6px;text-decoration:none;border:1px solid ${cat.color}44">
+        Article →
+      </a>` : ""}
+    </div>
   </div>`;
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -123,8 +150,10 @@ export default function App() {
   const [roadsidePins,  setRoadsidePins]  = useState([]);
   const [newsResults,   setNewsResults]   = useState({});
   const [activeTab,     setActiveTab]     = useState("layers");
-  const [scanLocation,  setScanLocation]  = useState("");
+  const [scanLocation,  setScanLocation]  = useState("United States");
   const [scanCat,       setScanCat]       = useState("incidents");
+  const [apiKey,        setApiKey]        = useState(()=>localStorage.getItem("bi-apikey")||"");
+  const [showSettings,  setShowSettings]  = useState(false);
   const [scanning,      setScanning]      = useState(false);
   const [scanStatus,    setScanStatus]    = useState("");
   const [gpsLoading,    setGpsLoading]    = useState(false);
@@ -132,6 +161,7 @@ export default function App() {
   const [dragOver,      setDragOver]      = useState(false);
   const [editPin,       setEditPin]       = useState(null); // index of pin being edited
   const [mapStyle,      setMapStyle]      = useState("satellite"); // satellite|streets|dark
+  const [drawerOpen,    setDrawerOpen]    = useState(false);
 
   const mapRef        = useRef(null);
   const leafletMap    = useRef(null);
@@ -318,8 +348,9 @@ export default function App() {
     const cat = NEWS_CATS.find(c=>c.id===scanCat);
     setScanning(true); setScanStatus("Searching the web…");
     try {
+      if (!apiKey.trim()) { setScanStatus("⚠️ Add your Anthropic API key in ⚙️ Settings first"); setScanning(false); return; }
       const res  = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method:"POST", headers:{"Content-Type":"application/json","x-api-key":apiKey.trim(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
         body:JSON.stringify({
           model:"claude-sonnet-4-20250514", max_tokens:1000,
           tools:[{type:"web_search_20250305",name:"web_search"}],
@@ -455,121 +486,248 @@ export default function App() {
       <div style={{position:"fixed",bottom:24,right:24,display:"flex",flexDirection:"column",gap:8,zIndex:9999,pointerEvents:"none"}}>
         {toasts.map(t=>(
           <div key={t.id} style={{background:t.type==="err"?"#1a0505":"#051a0a",border:`1px solid ${t.type==="err"?"#ff4d4d":"#00e676"}`,borderRadius:10,padding:"10px 18px",color:t.type==="err"?"#ff4d4d":"#00e676",fontSize:13,fontWeight:600,boxShadow:"0 4px 20px rgba(0,0,0,.5)"}}>
-            {t.msg}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // MAIN APP
+            {t.msg  // ════════════════════════════════════════════════════════════════════════════
+  // MAIN APP  — mobile-first: full-screen map + slide-up drawer
   // ════════════════════════════════════════════════════════════════════════════
   const currentScanCat = NEWS_CATS.find(c=>c.id===scanCat);
+  const DRAWER_PEEK = 96; // px visible when closed
 
   return (
-    <div style={{display:"flex",height:"100vh",fontFamily:"'Figtree',sans-serif",background:"#060d18",overflow:"hidden"}}>
+    <div style={{position:"relative",width:"100vw",height:"100vh",overflow:"hidden",fontFamily:"'Figtree',sans-serif",background:"#060d18"}}>
 
-      {/* ══ SIDEBAR ═══════════════════════════════════════════════════════════ */}
-      <div style={{width:370,minWidth:370,height:"100vh",display:"flex",flexDirection:"column",background:"#07101e",borderRight:"1px solid #0f2035",overflow:"hidden"}}>
+      {/* ══ FULL-SCREEN MAP ═══════════════════════════════════════════════════ */}
+      <div ref={mapRef} style={{position:"absolute",inset:0,zIndex:0}}
+        onClick={()=>setDrawerOpen(false)}/>
 
-        {/* Header */}
-        <div style={{padding:"14px 20px 12px",borderBottom:"1px solid #0f2035",background:"linear-gradient(180deg,#0c1828,#07101e)"}}>
-          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:24,color:"#d8eaff",letterSpacing:2}}>BUILDING INTEL</div>
-          <div style={{color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace",marginTop:2}}>
-            {totalPins.toLocaleString()} imported · {roadsidePins.length} roadside · Mapbox Satellite
+      {/* ══ TOP BAR ════════════════════════════════════════════════════════════ */}
+      <div style={{
+        position:"absolute",top:0,left:0,right:0,zIndex:800,
+        padding:"10px 14px 8px",
+        background:"linear-gradient(180deg,rgba(6,13,24,.92) 0%,transparent 100%)",
+        display:"flex",alignItems:"center",justifyContent:"space-between",
+        pointerEvents:"none"
+      }}>
+        <div style={{pointerEvents:"auto"}}>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,color:"#d8eaff",letterSpacing:2,lineHeight:1}}>BUILDING INTEL</div>
+          <div style={{color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace"}}>
+            {totalPins.toLocaleString()} pins · {roadsidePins.length} roadside
           </div>
         </div>
 
-        {/* Tabs */}
-        <div style={{display:"flex",borderBottom:"1px solid #0f2035"}}>
-          {[{id:"layers",label:"My Lists"},{id:"news",label:"News Scan"},{id:"roadside",label:"Roadside"}].map(tab=>(
-            <button key={tab.id} onClick={()=>setActiveTab(tab.id)} style={{
-              flex:1,padding:"11px 6px",background:activeTab===tab.id?"#0d1e30":"transparent",
-              border:"none",borderBottom:activeTab===tab.id?"2px solid #ff6b35":"2px solid transparent",
-              color:activeTab===tab.id?"#d8eaff":"#2a4a6a",fontSize:11,fontWeight:activeTab===tab.id?700:400,
-              cursor:"pointer",fontFamily:"'JetBrains Mono',monospace",letterSpacing:.5
-            }}>
-              {tab.label}
-              {tab.id==="roadside" && roadsidePins.length>0 && (
-                <span style={{marginLeft:5,background:"#00e676",color:"#003300",fontSize:9,fontWeight:800,padding:"1px 5px",borderRadius:8}}>{roadsidePins.length}</span>
-              )}
-            </button>
+        {/* Basemap switcher + settings */}
+        <div style={{display:"flex",gap:5,alignItems:"center",pointerEvents:"auto"}}>
+          {Object.entries(TILE_LAYERS).map(([key,tl])=>(
+            <button key={key} onClick={e=>{e.stopPropagation();setMapStyle(key);}} style={{
+              background: mapStyle===key ? "rgba(255,255,255,.95)" : "rgba(6,13,24,.75)",
+              border: `1.5px solid ${mapStyle===key?"#ff6b35":"rgba(255,255,255,.2)"}`,
+              borderRadius:8, color: mapStyle===key?"#111":"#8ab0cc",
+              padding:"5px 9px", fontSize:11,
+              fontWeight: mapStyle===key?700:400,
+              cursor:"pointer", backdropFilter:"blur(8px)",
+              whiteSpace:"nowrap"
+            }}>{tl.label}</button>
           ))}
+          <button onClick={e=>{e.stopPropagation();setShowSettings(s=>!s);}} style={{
+            background:"rgba(6,13,24,.75)", border:"1.5px solid rgba(255,255,255,.2)",
+            borderRadius:8, color:"#8ab0cc", padding:"5px 9px", fontSize:14,
+            cursor:"pointer", backdropFilter:"blur(8px)"
+          }}>⚙️</button>
+        </div>
+      </div>
+
+      {/* ══ SETTINGS PANEL ════════════════════════════════════════════════════ */}
+      {showSettings&&(
+        <div onClick={e=>e.stopPropagation()} style={{
+          position:"absolute",top:60,right:12,zIndex:1200,
+          background:"#0c1828",border:"1px solid #1e3a5c",
+          borderRadius:14,padding:"18px 20px",width:290,
+          boxShadow:"0 8px 32px rgba(0,0,0,.7)"
+        }}>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:"#d8eaff",letterSpacing:2,marginBottom:4}}>SETTINGS</div>
+
+          {/* API Key */}
+          <div style={{marginBottom:14}}>
+            <label style={{display:"block",color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.5,marginBottom:6}}>
+              ANTHROPIC API KEY <span style={{color:"#ff6b35"}}>(required for News Scan)</span>
+            </label>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={e=>{setApiKey(e.target.value);localStorage.setItem("bi-apikey",e.target.value);}}
+              placeholder="sk-ant-..."
+              style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#b8d4f0",padding:"9px 12px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none"}}
+            />
+            <div style={{color:"#1e3a5c",fontSize:10,marginTop:5,lineHeight:1.5}}>
+              Get a key at <a href="https://console.anthropic.com" target="_blank" style={{color:"#3a6aaa"}}>console.anthropic.com</a> → API Keys. Stored only on your device.
+            </div>
+          </div>
+
+          {/* Overlay note */}
+          <div style={{background:"#07101e",border:"1px solid #0f2035",borderRadius:8,padding:"10px 12px",marginBottom:14}}>
+            <div style={{color:"#ff6b35",fontSize:11,fontWeight:700,marginBottom:4}}>📍 About the floating button</div>
+            <div style={{color:"#2a4a6a",fontSize:11,lineHeight:1.5}}>
+              Android apps can't float over other apps unless they're native — PWA web apps like this one can't do a true system overlay. Best approach while driving: keep Building Intel open, use your car's navigation separately (Google Maps on dashboard), and tap 📍 when you spot something.
+            </div>
+          </div>
+
+          <button onClick={()=>setShowSettings(false)} style={{
+            width:"100%",background:"#ff6b35",border:"none",borderRadius:8,
+            color:"#fff",padding:"10px",cursor:"pointer",
+            fontFamily:"'Bebas Neue',sans-serif",fontSize:15,letterSpacing:2
+          }}>DONE</button>
+        </div>
+      )}
+
+      {/* ══ ROADSIDE SAVE BUTTON ══════════════════════════════════════════════ */}
+      <button onClick={e=>{e.stopPropagation();saveRoadside();}} disabled={gpsLoading} style={{
+        position:"absolute",
+        bottom: drawerOpen ? `calc(${DRAWER_PEEK}px + 52vh + 16px)` : `${DRAWER_PEEK+16}px`,
+        right:16, zIndex:900,
+        width:68, height:68, borderRadius:"50%",
+        background:gpsLoading?"#0f2035":"linear-gradient(135deg,#00e676,#00a84f)",
+        border:"3px solid rgba(255,255,255,.25)",
+        boxShadow:gpsLoading?"0 4px 20px rgba(0,0,0,.5)":"0 4px 28px rgba(0,230,118,.55),0 0 0 7px rgba(0,230,118,.12)",
+        cursor:gpsLoading?"not-allowed":"pointer",
+        display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:1,
+        animation:gpsLoading?"none":"roadside-pulse 2.5s infinite",
+        transition:"bottom .3s ease, all .2s"
+      }}>
+        <span style={{fontSize:26,lineHeight:1}}>{gpsLoading?"📡":"📍"}</span>
+        <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:9,letterSpacing:1,color:gpsLoading?"#2a4a6a":"#002d15"}}>
+          {gpsLoading?"GPS":"SAVE"}
+        </span>
+      </button>
+
+      {/* ══ FIT MAP BUTTON ════════════════════════════════════════════════════ */}
+      {totalPins>0&&(
+        <button onClick={e=>{e.stopPropagation();
+          const coords=Object.values(lists).flatMap(l=>(l.ready||[]).map(e=>[e.lat,e.lng]));
+          if(coords.length&&leafletMap.current) leafletMap.current.fitBounds(coords,{padding:[60,60]});
+        }} style={{
+          position:"absolute",
+          bottom: drawerOpen ? `calc(${DRAWER_PEEK}px + 52vh + 92px)` : `${DRAWER_PEEK+88}px`,
+          right:16, zIndex:900,
+          background:"rgba(6,13,24,.8)", border:"1px solid rgba(255,255,255,.15)",
+          borderRadius:10, color:"#8ab0cc", padding:"8px 12px",
+          cursor:"pointer", fontSize:11, backdropFilter:"blur(8px)",
+          fontFamily:"'JetBrains Mono',monospace", whiteSpace:"nowrap",
+          transition:"bottom .3s ease"
+        }}>🗺 Fit all {totalPins} pins</button>
+      )}
+
+      {/* ══ BOTTOM DRAWER ═════════════════════════════════════════════════════ */}
+      <div style={{
+        position:"absolute",bottom:0,left:0,right:0,zIndex:800,
+        background:"#07101e",
+        borderRadius:"20px 20px 0 0",
+        boxShadow:"0 -4px 32px rgba(0,0,0,.6)",
+        height: drawerOpen ? "62vh" : `${DRAWER_PEEK}px`,
+        transition:"height .3s cubic-bezier(.4,0,.2,1)",
+        display:"flex",flexDirection:"column",
+        overflow:"hidden"
+      }} onClick={e=>e.stopPropagation()}>
+
+        {/* Drag handle + tap to toggle */}
+        <div onClick={()=>setDrawerOpen(o=>!o)} style={{
+          padding:"10px 0 0", cursor:"pointer", flexShrink:0,
+          display:"flex",flexDirection:"column",alignItems:"center",gap:8
+        }}>
+          <div style={{width:40,height:4,background:"#1a3050",borderRadius:2}}/>
+
+          {/* Tabs row */}
+          <div style={{display:"flex",width:"100%",borderBottom:"1px solid #0f2035"}}>
+            {[
+              {id:"layers",label:"📋 My Lists"},
+              {id:"news",   label:"📰 News Scan"},
+              {id:"roadside",label:"📍 Roadside"},
+            ].map(tab=>(
+              <button key={tab.id} onClick={e=>{e.stopPropagation();setActiveTab(tab.id);setDrawerOpen(true);}} style={{
+                flex:1, padding:"9px 4px",
+                background:activeTab===tab.id?"#0d1e30":"transparent",
+                border:"none",
+                borderBottom:activeTab===tab.id?"2px solid #ff6b35":"2px solid transparent",
+                color:activeTab===tab.id?"#d8eaff":"#2a4a6a",
+                fontSize:11,fontWeight:activeTab===tab.id?700:400,
+                cursor:"pointer",fontFamily:"'JetBrains Mono',monospace",letterSpacing:.3
+              }}>
+                {tab.label}
+                {tab.id==="roadside"&&roadsidePins.length>0&&(
+                  <span style={{marginLeft:4,background:"#00e676",color:"#003300",fontSize:9,fontWeight:800,padding:"1px 5px",borderRadius:8}}>{roadsidePins.length}</span>
+                )}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Tab content */}
-        <div style={{flex:1,overflowY:"auto",overscrollBehavior:"contain"}}>
+        {/* Scrollable content */}
+        <div style={{flex:1,overflowY:"auto",padding:"12px 16px",overscrollBehavior:"contain"}}>
 
-          {/* ── MY LISTS ─────────────────────────────────────────────────── */}
-          {activeTab==="layers" && (
-            <div style={{padding:"14px 16px"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-                <span style={S.label}>GOOGLE MAPS LISTS</span>
-                <button onClick={()=>setPhase("import")} style={{background:"none",border:"1px solid #0f2035",borderRadius:5,color:"#2a4a6a",fontSize:10,cursor:"pointer",padding:"2px 8px",fontFamily:"'JetBrains Mono',monospace"}}>
-                  Re-import
-                </button>
+          {/* ── MY LISTS ──────────────────────────────────────────────────── */}
+          {activeTab==="layers"&&(
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <span style={{color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.5}}>YOUR GOOGLE MAPS LISTS</span>
+                <button onClick={()=>setPhase("import")} style={{background:"none",border:"1px solid #0f2035",borderRadius:5,color:"#2a4a6a",fontSize:10,cursor:"pointer",padding:"2px 8px",fontFamily:"'JetBrains Mono',monospace"}}>Re-import</button>
               </div>
 
-              {Object.keys(lists).length===0 ? (
-                <div style={{textAlign:"center",padding:"40px 0",color:"#1e3a5c"}}>
+              {Object.keys(lists).length===0?(
+                <div style={{textAlign:"center",padding:"32px 0",color:"#1e3a5c"}}>
                   <div style={{fontSize:36,marginBottom:8}}>📭</div>
-                  <div style={{fontSize:12,marginBottom:12}}>No lists imported yet</div>
+                  <div style={{fontSize:13,marginBottom:12}}>No lists imported yet</div>
                   <button onClick={()=>setPhase("import")} style={{background:"#ff6b35",border:"none",borderRadius:8,color:"#fff",padding:"10px 20px",cursor:"pointer",fontWeight:700,fontSize:13}}>Import ZIP</button>
                 </div>
-              ) : (
-                <>
-                  {Object.entries(lists).map(([name,data])=>{
-                    const on = layerVis[name]!==false;
-                    const rc = data.ready?.length||0, pc = data.pending?.length||0;
-                    return (
-                      <div key={name} onClick={()=>toggleLayer(name)} style={{
-                        display:"flex",alignItems:"center",gap:10,padding:"10px 12px",
-                        borderRadius:9,marginBottom:4,cursor:"pointer",
-                        background:on?`${data.color}12`:"transparent",
-                        border:`1px solid ${on?data.color+"35":"#0f1e30"}`,
-                        transition:"all .15s"
-                      }}>
-                        <div style={{width:11,height:11,borderRadius:6,background:on?data.color:"#1a3050",flexShrink:0,transition:"background .15s"}}/>
-                        <span style={{fontSize:15,flexShrink:0}}>{data.icon}</span>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{color:on?"#c0d8f0":"#2a4a6a",fontSize:12,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{name}</div>
-                          <div style={{color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace"}}>{rc} mapped{pc>0?` · ${pc} pending`:""}</div>
-                        </div>
-                        {rc>0&&<span style={{background:on?data.color:"#1a3050",color:on?"#000":"#2a4a6a",fontSize:10,fontWeight:800,padding:"2px 8px",borderRadius:10,flexShrink:0}}>{rc}</span>}
+              ):Object.entries(lists).map(([name,data])=>{
+                const on=layerVis[name]!==false;
+                const rc=data.ready?.length||0, pc=data.pending?.length||0;
+                return(
+                  <div key={name} onClick={()=>toggleLayer(name)} style={{
+                    display:"flex",alignItems:"center",gap:10,padding:"11px 13px",
+                    borderRadius:10,marginBottom:5,cursor:"pointer",
+                    background:on?`${data.color}12`:"transparent",
+                    border:`1px solid ${on?data.color+"35":"#0f1e30"}`,
+                    transition:"all .15s"
+                  }}>
+                    <div style={{width:12,height:12,borderRadius:6,background:on?data.color:"#1a3050",flexShrink:0}}/>
+                    <span style={{fontSize:18,flexShrink:0}}>{data.icon}</span>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{color:on?"#c0d8f0":"#2a4a6a",fontSize:13,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{name}</div>
+                      <div style={{color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace"}}>
+                        {rc} on map{pc>0?` · ${pc} not yet placed`:""}
                       </div>
-                    );
-                  })}
+                    </div>
+                    {rc>0&&<span style={{background:on?data.color:"#1a3050",color:on?"#000":"#2a4a6a",fontSize:11,fontWeight:800,padding:"2px 9px",borderRadius:10,flexShrink:0}}>{rc}</span>}
+                  </div>
+                );
+              })}
 
-                  {totalPins>0&&(
-                    <button onClick={()=>{
-                      const coords=Object.values(lists).flatMap(l=>(l.ready||[]).map(e=>[e.lat,e.lng]));
-                      if(coords.length&&leafletMap.current) leafletMap.current.fitBounds(coords,{padding:[50,50]});
-                    }} style={{width:"100%",marginTop:10,background:"#0b1828",border:"1px solid #0f2035",borderRadius:8,color:"#3a5a78",padding:"10px",cursor:"pointer",fontSize:12,fontFamily:"'JetBrains Mono',monospace"}}>
-                      🗺 Fit all {totalPins.toLocaleString()} pins
-                    </button>
-                  )}
-                </>
+              {Object.keys(lists).length>0&&(
+                <div style={{marginTop:8,padding:"10px 14px",background:"#090f1c",borderRadius:8,border:"1px solid #0f1e30"}}>
+                  <div style={{color:"#2a4a6a",fontSize:11,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.5}}>
+                    💡 <strong style={{color:"#3a5a78"}}>What is "not yet placed"?</strong><br/>
+                    These pins were saved in Google Maps by name (like a business or address) rather than as a dropped GPS pin, so we don't have their exact coordinates yet. Tap a list to toggle it on/off on the map.
+                  </div>
+                </div>
               )}
             </div>
           )}
 
-          {/* ── NEWS SCAN ────────────────────────────────────────────────── */}
-          {activeTab==="news" && (
-            <div style={{padding:"14px 16px"}}>
-              <label style={S.label}>LOCATION TARGET</label>
+          {/* ── NEWS SCAN ──────────────────────────────────────────────────── */}
+          {activeTab==="news"&&(
+            <div>
+              <label style={{display:"block",color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.5,marginBottom:6}}>LOCATION TARGET</label>
               <input value={scanLocation} onChange={e=>setScanLocation(e.target.value)}
                 onKeyDown={e=>e.key==="Enter"&&!scanning&&runScan()}
-                placeholder="e.g.  Detroit, MI  or  Philadelphia" style={{...S.input,marginBottom:14}}/>
+                placeholder="e.g.  Detroit, MI"
+                style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #152540",borderRadius:8,color:"#b8d4f0",padding:"10px 14px",fontSize:13,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:12}}/>
 
-              <label style={S.label}>CATEGORY</label>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:14}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:12}}>
                 {NEWS_CATS.map(c=>(
                   <button key={c.id} onClick={()=>setScanCat(c.id)} style={{
                     background:scanCat===c.id?`${c.color}20`:"transparent",
                     border:`1px solid ${scanCat===c.id?c.color:"#0f2035"}`,
                     borderRadius:8,color:scanCat===c.id?c.color:"#2a4a6a",
-                    padding:"9px 10px",fontSize:12,fontWeight:scanCat===c.id?700:400,cursor:"pointer",textAlign:"left",
+                    padding:"9px 10px",fontSize:12,fontWeight:scanCat===c.id?700:400,
+                    cursor:"pointer",textAlign:"left",
                     display:"flex",justifyContent:"space-between",alignItems:"center"
                   }}>
                     <span>{c.icon} {c.label}</span>
@@ -582,11 +740,18 @@ export default function App() {
 
               <button onClick={runScan} disabled={scanning||!scanLocation.trim()} style={{
                 width:"100%",background:scanning?"#0f2035":`linear-gradient(135deg,${currentScanCat.color}bb,${currentScanCat.color}77)`,
-                border:"none",borderRadius:8,color:scanning?"#2a4a6a":"#fff",padding:"13px",
-                cursor:scanning?"not-allowed":"pointer",fontFamily:"'Bebas Neue',sans-serif",fontSize:16,letterSpacing:2,marginBottom:10
+                border:"none",borderRadius:8,color:scanning?"#2a4a6a":"#fff",
+                padding:"13px",cursor:scanning?"not-allowed":"pointer",
+                fontFamily:"'Bebas Neue',sans-serif",fontSize:16,letterSpacing:2,marginBottom:10
               }}>
                 {scanning?"⏳  SCANNING…":"🔍  SCAN NOW"}
               </button>
+
+              {!apiKey&&!scanning&&(
+                <div style={{padding:"8px 12px",background:"#1a0a00",borderRadius:6,marginBottom:8,borderLeft:"3px solid #ff6b35",color:"#ff6b35",fontSize:11,fontFamily:"'JetBrains Mono',monospace"}}>
+                  ⚠️ Tap <strong>⚙️</strong> (top right) → add your Anthropic API key to enable scanning
+                </div>
+              )}
 
               {scanStatus&&(
                 <div style={{padding:"8px 12px",background:"#0b1828",borderRadius:6,marginBottom:10,
@@ -598,13 +763,13 @@ export default function App() {
               )}
 
               {(newsResults[scanCat]||[]).map((r,i)=>(
-                <div key={i} onClick={()=>{if(r.lat&&leafletMap.current)leafletMap.current.flyTo([r.lat,r.lng],17,{duration:1.2});}}
+                <div key={i} onClick={()=>{if(r.lat&&leafletMap.current){leafletMap.current.flyTo([r.lat,r.lng],17,{duration:1.2});setDrawerOpen(false);}}}
                   style={{background:"#090f1c",border:"1px solid #0f1e30",borderRadius:8,padding:"10px 12px",marginBottom:6,cursor:"pointer"}}>
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
                     <span style={{background:`${currentScanCat.color}22`,color:currentScanCat.color,fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4}}>{r.incident_type||currentScanCat.label.toUpperCase()}</span>
                     <span style={{color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace"}}>{r.date}</span>
                   </div>
-                  <div style={{color:"#c0d8f0",fontSize:12,fontWeight:600,lineHeight:1.35,marginBottom:4}}>{r.title}</div>
+                  <div style={{color:"#c0d8f0",fontSize:13,fontWeight:600,lineHeight:1.35,marginBottom:4}}>{r.title}</div>
                   <div style={{color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",marginBottom:5}}>📍 {r.address}, {r.city}</div>
                   {r.url&&<a href={r.url} target="_blank" rel="noopener" onClick={e=>e.stopPropagation()} style={{color:currentScanCat.color,fontSize:11,fontWeight:700,textDecoration:"none"}}>↗ Article</a>}
                 </div>
@@ -612,11 +777,10 @@ export default function App() {
             </div>
           )}
 
-          {/* ── ROADSIDE ─────────────────────────────────────────────────── */}
-          {activeTab==="roadside" && (
-            <div style={{padding:"14px 16px"}}>
-              {/* Save button in sidebar too */}
-              <button onClick={saveRoadside} disabled={gpsLoading} style={{
+          {/* ── ROADSIDE ───────────────────────────────────────────────────── */}
+          {activeTab==="roadside"&&(
+            <div>
+              <button onClick={e=>{e.stopPropagation();saveRoadside();}} disabled={gpsLoading} style={{
                 width:"100%",padding:"16px",
                 background:gpsLoading?"#0f2035":"linear-gradient(135deg,#00e676,#00a84f)",
                 border:"none",borderRadius:10,color:gpsLoading?"#2a4a6a":"#002d15",
@@ -627,31 +791,28 @@ export default function App() {
               </button>
 
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                <span style={S.label}>{roadsidePins.length} SAVED FINDS</span>
+                <span style={{color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.5}}>{roadsidePins.length} SAVED FINDS</span>
                 {roadsidePins.length>0&&(
                   <button onClick={()=>{if(confirm("Clear all roadside finds?"))setRoadsidePins([]);}}
-                    style={{background:"none",border:"none",color:"#ff4d4d",fontSize:11,cursor:"pointer",fontFamily:"'JetBrains Mono',monospace"}}>
-                    ✕ clear all
-                  </button>
+                    style={{background:"none",border:"none",color:"#ff4d4d",fontSize:11,cursor:"pointer",fontFamily:"'JetBrains Mono',monospace"}}>✕ clear all</button>
                 )}
               </div>
 
-              {roadsidePins.length===0 ? (
-                <div style={{textAlign:"center",padding:"40px 0",color:"#1e3a5c"}}>
-                  <div style={{fontSize:40,marginBottom:8}}>📍</div>
-                  <div style={{fontSize:12,marginBottom:4}}>No roadside finds yet</div>
-                  <div style={{fontSize:11,color:"#1a3050"}}>Tap the green button on the map while driving</div>
+              {roadsidePins.length===0?(
+                <div style={{textAlign:"center",padding:"32px 0",color:"#1e3a5c"}}>
+                  <div style={{fontSize:36,marginBottom:8}}>📍</div>
+                  <div style={{fontSize:12}}>No roadside finds yet</div>
+                  <div style={{fontSize:11,marginTop:4,color:"#1a3050"}}>Tap the green button on the map while driving</div>
                 </div>
-              ) : roadsidePins.map((pin,i)=>(
+              ):roadsidePins.map((pin,i)=>(
                 <div key={i} style={{background:"#090f1c",border:"1px solid #00e67618",borderRadius:9,padding:"11px 13px",marginBottom:6}}>
-                  {editPin===i ? (
-                    /* Edit mode */
+                  {editPin===i?(
                     <div>
                       <input defaultValue={pin.title} id={`et-${i}`}
-                        style={{...S.input,marginBottom:6,fontSize:12}}
+                        style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #152540",borderRadius:8,color:"#b8d4f0",padding:"8px 12px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:6}}
                         placeholder="Label / name"/>
                       <input defaultValue={pin.note} id={`en-${i}`}
-                        style={{...S.input,marginBottom:8,fontSize:12}}
+                        style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #152540",borderRadius:8,color:"#b8d4f0",padding:"8px 12px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:8}}
                         placeholder="Notes (optional)"/>
                       <div style={{display:"flex",gap:6}}>
                         <button onClick={()=>{
@@ -659,38 +820,25 @@ export default function App() {
                           const n=document.getElementById(`en-${i}`)?.value||"";
                           setRoadsidePins(p=>p.map((x,j)=>j===i?{...x,title:t,note:n}:x));
                           setEditPin(null);
-                        }} style={{flex:1,background:"#00e676",border:"none",borderRadius:6,color:"#003300",padding:"7px",cursor:"pointer",fontSize:12,fontWeight:700}}>
-                          Save
-                        </button>
+                        }} style={{flex:1,background:"#00e676",border:"none",borderRadius:6,color:"#003300",padding:"8px",cursor:"pointer",fontSize:12,fontWeight:700}}>Save</button>
                         <button onClick={()=>setEditPin(null)}
-                          style={{flex:1,background:"#0b1828",border:"1px solid #0f2035",borderRadius:6,color:"#3a5a78",padding:"7px",cursor:"pointer",fontSize:12}}>
-                          Cancel
-                        </button>
+                          style={{flex:1,background:"#0b1828",border:"1px solid #0f2035",borderRadius:6,color:"#3a5a78",padding:"8px",cursor:"pointer",fontSize:12}}>Cancel</button>
                       </div>
                     </div>
-                  ) : (
-                    /* View mode */
+                  ):(
                     <>
                       <div style={{color:"#00c853",fontSize:13,fontWeight:700,marginBottom:3}}>{pin.title}</div>
                       {pin.note&&<div style={{color:"#3a5a78",fontSize:12,marginBottom:3}}>{pin.note}</div>}
-                      <div style={{color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace",marginBottom:6}}>{pin.timestamp} · ±{pin.accuracy}m</div>
+                      <div style={{color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace",marginBottom:8}}>{pin.timestamp} · ±{pin.accuracy}m</div>
                       <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                        <button onClick={()=>{if(leafletMap.current)leafletMap.current.flyTo([pin.lat,pin.lng],17,{duration:1.2});}}
-                          style={{background:"#0b1828",border:"1px solid #0f2035",borderRadius:6,color:"#3a5a78",padding:"4px 10px",cursor:"pointer",fontSize:10,fontFamily:"'JetBrains Mono',monospace"}}>
-                          🗺 Map
-                        </button>
+                        <button onClick={()=>{if(leafletMap.current){leafletMap.current.flyTo([pin.lat,pin.lng],17,{duration:1.2});setDrawerOpen(false);}}}
+                          style={{background:"#0b1828",border:"1px solid #0f2035",borderRadius:6,color:"#3a5a78",padding:"5px 11px",cursor:"pointer",fontSize:11,fontFamily:"'JetBrains Mono',monospace"}}>🗺 Map</button>
                         <a href={`https://www.google.com/maps?q=${pin.lat},${pin.lng}`} target="_blank" rel="noopener"
-                          style={{background:"#0b1828",border:"1px solid #00e67630",borderRadius:6,color:"#00c853",padding:"4px 10px",fontSize:10,textDecoration:"none",fontFamily:"'JetBrains Mono',monospace"}}>
-                          ↗ Street View
-                        </a>
+                          style={{background:"#0b1828",border:"1px solid #00e67630",borderRadius:6,color:"#00c853",padding:"5px 11px",fontSize:11,textDecoration:"none",fontFamily:"'JetBrains Mono',monospace"}}>↗ Street View</a>
                         <button onClick={()=>setEditPin(i)}
-                          style={{background:"#0b1828",border:"1px solid #0f2035",borderRadius:6,color:"#3a5a78",padding:"4px 10px",cursor:"pointer",fontSize:10,fontFamily:"'JetBrains Mono',monospace"}}>
-                          ✏️ Edit
-                        </button>
+                          style={{background:"#0b1828",border:"1px solid #0f2035",borderRadius:6,color:"#3a5a78",padding:"5px 11px",cursor:"pointer",fontSize:11,fontFamily:"'JetBrains Mono',monospace"}}>✏️ Edit</button>
                         <button onClick={()=>setRoadsidePins(p=>p.filter((_,j)=>j!==i))}
-                          style={{background:"none",border:"none",color:"#ff4d4d",padding:"4px 6px",cursor:"pointer",fontSize:10}}>
-                          ✕
-                        </button>
+                          style={{background:"none",border:"none",color:"#ff4d4d",padding:"5px 6px",cursor:"pointer",fontSize:11}}>✕</button>
                       </div>
                     </>
                   )}
@@ -699,76 +847,24 @@ export default function App() {
             </div>
           )}
         </div>
-
-        {/* Legend */}
-        <div style={{padding:"8px 16px",borderTop:"1px solid #0f2035",display:"flex",gap:10,flexWrap:"wrap"}}>
-          {Object.entries(LIST_CONFIG).slice(0,6).map(([n,c])=>(
-            <div key={n} style={{display:"flex",alignItems:"center",gap:4}}>
-              <div style={{width:8,height:8,borderRadius:"50% 50% 50% 0",transform:"rotate(-45deg)",background:c.color,flexShrink:0}}/>
-              <span style={{color:"#1e3a5c",fontSize:9,whiteSpace:"nowrap"}}>{n.split(" ")[0]}</span>
-            </div>
-          ))}
-        </div>
       </div>
 
-      {/* ══ MAP ═══════════════════════════════════════════════════════════════ */}
-      <div style={{flex:1,height:"100vh",position:"relative"}}>
-        <div ref={mapRef} style={{width:"100%",height:"100%"}}/>
-
-        {/* ── Basemap Switcher ── */}
-        <div style={{position:"absolute",top:12,right:12,zIndex:1400,display:"flex",flexDirection:"column",gap:6}}>
-          {Object.entries(TILE_LAYERS).map(([key,tl])=>(
-            <button key={key} onClick={()=>setMapStyle(key)} style={{
-              background: mapStyle===key ? "rgba(255,255,255,0.95)" : "rgba(7,16,30,0.85)",
-              border: mapStyle===key ? "2px solid #ff6b35" : "1px solid rgba(255,255,255,0.15)",
-              borderRadius:8,
-              color: mapStyle===key ? "#111" : "#8ab0cc",
-              padding:"6px 12px",
-              fontSize:11,fontWeight: mapStyle===key ? 700 : 400,
-              cursor:"pointer",
-              backdropFilter:"blur(6px)",
-              letterSpacing:.3,
-              whiteSpace:"nowrap",
-              transition:"all .15s"
-            }}>{tl.label}</button>
-          ))}
-        </div>
-
-        {/* ── Floating Roadside Save Button ── */}
-        <button onClick={saveRoadside} disabled={gpsLoading} style={{
-          position:"fixed",bottom:28,right:24,width:74,height:74,
-          borderRadius:"50%",zIndex:1500,
-          background:gpsLoading?"#0f2035":"linear-gradient(135deg,#00e676,#00a84f)",
-          border:"3px solid rgba(255,255,255,.25)",
-          boxShadow:gpsLoading?"0 4px 20px rgba(0,0,0,.5)":"0 4px 28px rgba(0,230,118,.55), 0 0 0 7px rgba(0,230,118,.12)",
-          cursor:gpsLoading?"not-allowed":"pointer",
-          display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:1,
-          animation:gpsLoading?"none":"roadside-pulse 2.5s infinite",
-          transition:"all .2s"
-        }}>
-          <span style={{fontSize:28,lineHeight:1}}>{gpsLoading?"📡":"📍"}</span>
-          <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:9,letterSpacing:1,color:gpsLoading?"#2a4a6a":"#002d15"}}>
-            {gpsLoading?"GPS":"SAVE"}
-          </span>
-        </button>
-
-        {/* ── Toasts ── */}
-        <div style={{position:"fixed",bottom:120,right:24,display:"flex",flexDirection:"column",gap:8,zIndex:2000,pointerEvents:"none"}}>
-          {toasts.map(t=>(
-            <div key={t.id} style={{
-              background:t.type==="err"?"#1e0505":"#051a0a",
-              border:`1px solid ${t.type==="err"?"#ff4d4d":"#00e676"}`,
-              borderRadius:10,padding:"10px 18px",
-              color:t.type==="err"?"#ff4d4d":"#00e676",
-              fontSize:13,fontWeight:600,
-              boxShadow:"0 4px 20px rgba(0,0,0,.45)",
-              animation:"toast-in .25s ease"
-            }}>{t.msg}</div>
-          ))}
-        </div>
+      {/* ══ TOASTS ════════════════════════════════════════════════════════════ */}
+      <div style={{position:"fixed",bottom:120,right:16,display:"flex",flexDirection:"column",gap:8,zIndex:2000,pointerEvents:"none"}}>
+        {toasts.map(t=>(
+          <div key={t.id} style={{
+            background:t.type==="err"?"#1e0505":"#051a0a",
+            border:`1px solid ${t.type==="err"?"#ff4d4d":"#00e676"}`,
+            borderRadius:10,padding:"10px 16px",
+            color:t.type==="err"?"#ff4d4d":"#00e676",
+            fontSize:13,fontWeight:600,
+            boxShadow:"0 4px 20px rgba(0,0,0,.45)",
+            animation:"toast-in .25s ease"
+          }}>{t.msg}</div>
+        ))}
       </div>
 
-      {/* ── Global styles ── */}
+      {/* ══ STYLES ════════════════════════════════════════════════════════════ */}
       <style>{`
         @keyframes roadside-pulse {
           0%,100%{box-shadow:0 4px 28px rgba(0,230,118,.55),0 0 0 7px rgba(0,230,118,.12)}
