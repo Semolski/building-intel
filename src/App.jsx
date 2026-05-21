@@ -486,7 +486,14 @@ export default function App() {
       <div style={{position:"fixed",bottom:24,right:24,display:"flex",flexDirection:"column",gap:8,zIndex:9999,pointerEvents:"none"}}>
         {toasts.map(t=>(
           <div key={t.id} style={{background:t.type==="err"?"#1a0505":"#051a0a",border:`1px solid ${t.type==="err"?"#ff4d4d":"#00e676"}`,borderRadius:10,padding:"10px 18px",color:t.type==="err"?"#ff4d4d":"#00e676",fontSize:13,fontWeight:600,boxShadow:"0 4px 20px rgba(0,0,0,.5)"}}>
-            {t.msg  // ════════════════════════════════════════════════════════════════════════════
+            {t.msg}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  // ════════════════════════════════════════════════════════════════════════════
   // MAIN APP  — mobile-first: full-screen map + slide-up drawer
   // ════════════════════════════════════════════════════════════════════════════
   const currentScanCat = NEWS_CATS.find(c=>c.id===scanCat);
