@@ -765,7 +765,8 @@ export default function App() {
                 const on=layerVis[name]!==false;
                 const rc=data.ready?.length||0, pc=data.pending?.length||0;
                 return(
-                  <div key={name} onClick={()=>toggleLayer(name)} style={{
+                  <div key={name}>
+                  <div onClick={()=>toggleLayer(name)} style={{
                     display:"flex",alignItems:"center",gap:10,padding:"11px 13px",
                     borderRadius:10,marginBottom:5,cursor:"pointer",
                     background:on?`${data.color}12`:"transparent",
@@ -792,6 +793,7 @@ export default function App() {
                       📍 Place {pc} unplaced pins
                     </button>
                   )}
+                  </div>
                 );
               })}
 
