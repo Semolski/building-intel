@@ -21,6 +21,12 @@ const TILE_LAYERS = {
   },
 };
 
+// ─── Access control ──────────────────────────────────────────────────────────
+// Change VIEWER_CODE before sharing the URL with someone
+const VIEWER_CODE  = "explore2024";
+// Editor code — can add/edit pins, cannot access admin settings
+const EDITOR_CODE  = "edit2024";
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 const LIST_CONFIG = {
   "Abandoned":                              { color:"#ff6b35", icon:"🏚️" },
@@ -83,6 +89,66 @@ async function parseZip(file) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ─── KMZ / KML parser ─────────────────────────────────────────────────────────
+async function parseKMZFile(file) {
+  const JSZip = window.JSZip;
+  let kmlText = "";
+  if (file.name.endsWith(".kmz")) {
+    const zip = await JSZip.loadAsync(file);
+    const kmlEntry = Object.values(zip.files).find(f => f.name.endsWith(".kml"));
+    if (!kmlEntry) throw new Error("No KML file found inside KMZ");
+    kmlText = await kmlEntry.async("string");
+  } else if (file.name.endsWith(".kml")) {
+    kmlText = await file.text();
+  } else throw new Error("Please upload a .kml or .kmz file");
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(kmlText, "application/xml");
+  const placemarks = doc.querySelectorAll("Placemark");
+  const pins = [];
+  placemarks.forEach(pm => {
+    const title = pm.querySelector("name")?.textContent?.trim() || "Placemark";
+    const note  = pm.querySelector("description")?.textContent?.trim() || "";
+    const coords = pm.querySelector("coordinates")?.textContent?.trim();
+    if (coords) {
+      const parts = coords.split(",").map(Number);
+      const [lng, lat] = parts;
+      if (!isNaN(lat) && !isNaN(lng)) pins.push({ title, note, lat, lng, url:"" });
+    }
+  });
+  return pins;
+}
+
+// ─── Export all pins to ZIP ────────────────────────────────────────────────────
+async function exportAllPins(lists, roadsidePins, newsResults) {
+  const JSZip = window.JSZip;
+  const zip = new JSZip();
+  const folder = zip.folder("building-intel-export");
+  for (const [name, data] of Object.entries(lists)) {
+    const rows = (data.ready||[]).map(e =>
+      `"${e.title.replace(/"/g,'""')}","${(e.note||"").replace(/"/g,'""')}",${e.lat},${e.lng},"${e.url||""}"`
+    );
+    if (rows.length) folder.file(`${name}.csv`, `Title,Note,Latitude,Longitude,URL\n${rows.join("\n")}`);
+  }
+  if (roadsidePins.length) {
+    const rows = roadsidePins.map(p =>
+      `"${(p.title||"").replace(/"/g,'""')}","${(p.note||"").replace(/"/g,'""')}",${p.lat},${p.lng},"${p.timestamp||""}","${p.refined?"yes":"no"}"`
+    );
+    folder.file("Roadside Finds.csv", `Title,Note,Latitude,Longitude,Timestamp,Refined\n${rows.join("\n")}`);
+  }
+  const allNews = Object.entries(newsResults).flatMap(([cat,items]) => items.map(r=>({...r,category:cat})));
+  if (allNews.length) {
+    const rows = allNews.map(r =>
+      `"${(r.title||"").replace(/"/g,'""')}","${r.city||""}","${r.state||""}","${r.incident_type||r.category}","${r.url||""}"`
+    );
+    folder.file("News Scan Results.csv", `Title,City,State,Type,URL\n${rows.join("\n")}`);
+  }
+  const blob = await zip.generateAsync({type:"blob"});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url; a.download = "building-intel-export.zip"; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
 
 // ─── Popup HTML helpers ───────────────────────────────────────────────────────
 const listPopup = (name, color, entry) => `
@@ -154,6 +220,33 @@ export default function App() {
   const [scanCat,       setScanCat]       = useState("incidents");
   const [apiKey,        setApiKey]        = useState(()=>localStorage.getItem("bi-apikey")||"");
   const [showSettings,  setShowSettings]  = useState(false);
+  const [settingsTab,   setSettingsTab]   = useState("general"); // general|import|access
+  const [authMode,      setAuthMode]      = useState(() => {
+    const stored    = sessionStorage.getItem("bi-auth");
+    const adminCode = localStorage.getItem("bi-admin-code") || "";
+    if (!adminCode && !VIEWER_CODE && !EDITOR_CODE) return "admin";
+    if (stored === "admin")  return "admin";
+    if (stored === "editor") return "editor";
+    if (stored === "viewer") return "viewer";
+    return "locked";
+  });
+  const [authInput,      setAuthInput]      = useState("");
+  const [authError,      setAuthError]      = useState("");
+  const [ntfyTopic,      setNtfyTopic]      = useState(()=>localStorage.getItem("bi-ntfy")||"");
+  const [adminCode,      setAdminCode]      = useState(()=>localStorage.getItem("bi-admin-code")||"");
+  const [adminToken,     setAdminToken]     = useState(()=>localStorage.getItem("bi-admin-token")||"");
+  const [appLocked,      setAppLocked]      = useState({ locked:false, message:"" });
+  const [locationAgreed, setLocationAgreed] = useState(()=>localStorage.getItem("bi-loc-agreed")==="true");
+  const [showLocModal,   setShowLocModal]   = useState(false);
+  const [accessLogs,     setAccessLogs]     = useState([]);
+  const [logsLoading,    setLogsLoading]    = useState(false);
+  const [lockMsg,        setLockMsg]        = useState("");
+  const [lockingApp,     setLockingApp]     = useState(false);
+  const [kmzListName,   setKmzListName]   = useState("My Map Pins");
+  const [kmzImporting,  setKmzImporting]  = useState(false);
+  const [manualAddrInput, setManualAddrInput] = useState("");
+  const [clickToPlace,  setClickToPlace]  = useState(false);
+  const [searchingAddr, setSearchingAddr] = useState(false);
   const [scanning,      setScanning]      = useState(false);
   const [scanStatus,    setScanStatus]    = useState("");
   const [gpsLoading,    setGpsLoading]    = useState(false);
@@ -529,6 +622,200 @@ export default function App() {
     finally { setScanning(false); }
   }, [scanning,scanLocation,scanCat,makeIcon]);
 
+  // ── Check server lock status on load ────────────────────────────────────
+  useEffect(() => {
+    fetch("/api/status").then(r=>r.json()).then(data=>{
+      setAppLocked({ locked:!!data.locked, message:data.message||"" });
+      setLockMsg(data.message||"");
+    }).catch(()=>{});
+  }, []);
+
+  // ── Log GPS access to server ──────────────────────────────────────────────
+  const logAccess = useCallback((role, lat, lng, accuracy) => {
+    fetch("/api/log",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        role, lat, lng, accuracy,
+        timestamp: new Date().toISOString(),
+        device: navigator.userAgent.replace(/\(.*?\)/g,"").trim().split(" ").slice(-3).join(" ")
+      })
+    }).catch(()=>{});
+    // Also ntfy
+    const topic = localStorage.getItem("bi-ntfy");
+    if (topic) {
+      const locStr = lat ? `${lat.toFixed(4)}, ${lng.toFixed(4)}` : "GPS not shared";
+      fetch(`https://ntfy.sh/${topic}`,{method:"POST",
+        headers:{"Title":`Building Intel — ${role} access`,"Priority":"default"},
+        body:`Role: ${role}\nTime: ${new Date().toLocaleString()}\nLocation: ${locStr}`
+      }).catch(()=>{});
+    }
+  }, []);
+
+  // ── Fetch access logs (admin) ─────────────────────────────────────────────
+  const fetchLogs = useCallback(() => {
+    const token = localStorage.getItem("bi-admin-token") || "";
+    if (!token) return;
+    setLogsLoading(true);
+    fetch("/api/logs",{headers:{"x-admin-token":token}})
+      .then(r=>r.json()).then(d=>{ setAccessLogs(d.logs||[]); })
+      .catch(()=>{}).finally(()=>setLogsLoading(false));
+  }, []);
+
+  // ── Toggle app lock ──────────────────────────────────────────────────────
+  const toggleLock = useCallback(async (locked) => {
+    const token = localStorage.getItem("bi-admin-token") || "";
+    if (!token) { toast("Set admin token in Access settings first","err"); return; }
+    setLockingApp(true);
+    try {
+      const res = await fetch("/api/lock",{
+        method:"POST",
+        headers:{"Content-Type":"application/json","x-admin-token":token},
+        body:JSON.stringify({ locked, message: lockMsg })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setAppLocked({ locked, message:lockMsg });
+        toast(locked ? "🔒 App locked for all users" : "🔓 App unlocked");
+      } else throw new Error(data.error || "Failed");
+    } catch(e) { toast(`Lock error: ${e.message}`,"err"); }
+    finally { setLockingApp(false); }
+  }, [lockMsg, toast]);
+
+  // ── Auth helpers ─────────────────────────────────────────────────────────
+  const tryAuth = useCallback((code) => {
+    const storedAdmin = localStorage.getItem("bi-admin-code") || "";
+    if (storedAdmin && code === storedAdmin) {
+      sessionStorage.setItem("bi-auth","admin");
+      setAuthMode("admin");
+      setShowLocModal(true); // ask for location after auth
+      return;
+    }
+    if (code === EDITOR_CODE) {
+      sessionStorage.setItem("bi-auth","editor");
+      setAuthMode("editor");
+      setShowLocModal(true);
+      return;
+    }
+    if (code === VIEWER_CODE) {
+      sessionStorage.setItem("bi-auth","viewer");
+      setAuthMode("viewer");
+      setShowLocModal(true);
+      return;
+    }
+    setAuthError("Incorrect code — try again");
+  }, []);
+
+  const agreeLocation = useCallback(() => {
+    localStorage.setItem("bi-loc-agreed","true");
+    setLocationAgreed(true);
+    setShowLocModal(false);
+    navigator.geolocation.getCurrentPosition(
+      pos => logAccess(authMode, pos.coords.latitude, pos.coords.longitude, Math.round(pos.coords.accuracy)),
+      ()  => logAccess(authMode, null, null, null),
+      { enableHighAccuracy:true, timeout:8000 }
+    );
+  }, [authMode, logAccess]);
+
+  const declineLocation = useCallback(() => {
+    setShowLocModal(false);
+    logAccess(authMode, null, null, null);
+  }, [authMode, logAccess]);
+
+  const isAdmin  = authMode === "admin";
+  const isEditor = authMode === "editor" || authMode === "admin";
+
+  // ── KMZ/KML import ──────────────────────────────────────────────────────────
+  const handleKMZImport = useCallback(async (file) => {
+    if (!file) return;
+    setKmzImporting(true);
+    try {
+      const pins = await parseKMZFile(file);
+      if (!pins.length) throw new Error("No placemarks with coordinates found");
+      const name = kmzListName || file.name.replace(/\.km[lz]$/i,"") || "My Map Pins";
+      setLists(prev => {
+        const existing = prev[name] || { color:"#7c3aed", icon:"🗺️", ready:[], pending:[] };
+        const existingKeys = new Set((existing.ready||[]).map(e=>`${e.lat},${e.lng}`));
+        const fresh = pins.filter(p => !existingKeys.has(`${p.lat},${p.lng}`));
+        return { ...prev, [name]: { ...existing, ready:[...(existing.ready||[]), ...fresh], pending:(existing.pending||[]) } };
+      });
+      setLayerVis(prev => ({...prev,[kmzListName||file.name]:true}));
+      toast(`✓ Imported ${pins.length} pins from ${file.name}`);
+    } catch(e) { toast(`KMZ error: ${e.message}`, "err"); }
+    finally { setKmzImporting(false); }
+  }, [kmzListName, toast]);
+
+  // ── Search address via Anthropic API (fallback for unplaced) ────────────────
+  const searchAddressViaAPI = useCallback(async (query) => {
+    if (!apiKey.trim()) { toast("Add API key in ⚙️ Settings first","err"); return; }
+    setSearchingAddr(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{"Content-Type":"application/json","x-api-key":apiKey.trim(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+        body:JSON.stringify({
+          model:"claude-sonnet-4-6", max_tokens:500,
+          tools:[{type:"web_search_20250305",name:"web_search"}],
+          system:`Find the address and GPS coordinates for this location. Return ONLY a JSON array of up to 3 results: [{display_name, lat, lon}]. Use decimal degrees. No markdown.`,
+          messages:[{role:"user",content:`Find address and coordinates for: ${query}`}]
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.filter(b=>b.type==="text").map(b=>b.text).join("") || "";
+      const match = text.match(/\[[\s\S]*\]/);
+      if (match) {
+        const results = JSON.parse(match[0]);
+        setGeocodeState(g => g ? {...g, results, loading:false, selectedIdx:null} : null);
+      } else throw new Error("No results found");
+    } catch(e) { toast(`Search failed: ${e.message}`,"err"); }
+    finally { setSearchingAddr(false); }
+  }, [apiKey, toast]);
+
+  // ── Manual address geocode ──────────────────────────────────────────────────
+  const geocodeManualAddress = useCallback(async (addr) => {
+    setSearchingAddr(true);
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(addr)}&limit=5&addressdetails=1`,
+        {headers:{"User-Agent":"BuildingIntelApp/1.0"}});
+      const data = await res.json();
+      setGeocodeState(g => g ? {...g, results:data||[], loading:false, selectedIdx:null} : null);
+      if (!data.length) toast("No results — try the web search option","err");
+    } catch(e) { toast("Geocode failed","err"); }
+    finally { setSearchingAddr(false); }
+  }, [toast]);
+
+  // ── Click-to-place mode ─────────────────────────────────────────────────────
+  const enterClickToPlace = useCallback(() => {
+    if (!leafletMap.current || !window.L) return;
+    setClickToPlace(true);
+    setDrawerOpen(false);
+    const map = leafletMap.current;
+    map.once("click", (e) => {
+      const {lat,lng} = e.latlng;
+      setGeocodeState(g => {
+        if (!g) return null;
+        const { listName, pending, index } = g;
+        const pin = pending[index];
+        const result = { lat, lon:lng, display_name:`Manually placed at ${lat.toFixed(5)}, ${lng.toFixed(5)}` };
+        // accept immediately
+        const newEntry = { title:pin.title, note:pin.note, lat, lng:lng, url:pin.url };
+        setLists(prev => {
+          const list = prev[listName];
+          const newPending = list.pending.filter((_,i)=>i!==index);
+          return {...prev,[listName]:{...list,ready:[...(list.ready||[]),newEntry],pending:newPending}};
+        });
+        const newPending = pending.filter((_,i)=>i!==index);
+        if (!newPending.length) return {...g,pending:[],done:true,placed:(g.placed||0)+1};
+        const ni = Math.min(index,newPending.length-1);
+        setTimeout(()=>geocodePin(listName,newPending,ni),800);
+        return {...g,pending:newPending,index:ni,placed:(g.placed||0)+1,loading:true,results:[],selectedIdx:null};
+      });
+      setClickToPlace(false);
+      setDrawerOpen(true);
+      toast("📍 Placed manually on map");
+    });
+  }, [geocodePin, toast]);
+
   // ─── Computed ────────────────────────────────────────────────────────────
   const totalPins = Object.values(lists).reduce((s,l)=>s+(l.ready?.length||0),0);
 
@@ -537,6 +824,49 @@ export default function App() {
     label: { display:"block", color:"#1e3a5c", fontSize:10, fontFamily:"'JetBrains Mono',monospace", letterSpacing:1.5, fontWeight:600, marginBottom:6 },
     input: { width:"100%", boxSizing:"border-box", background:"#0b1828", border:"1px solid #152540", borderRadius:8, color:"#b8d4f0", padding:"10px 14px", fontSize:13, fontFamily:"'JetBrains Mono',monospace", outline:"none" },
   };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // AUTH / LOCK SCREEN
+  // ════════════════════════════════════════════════════════════════════════════
+  // Server-locked screen (admin can still bypass with admin code)
+  if (appLocked.locked && authMode !== "admin") return (
+    <div style={{display:"flex",height:"100vh",background:"#060d18",alignItems:"center",justifyContent:"center",fontFamily:"'Figtree',sans-serif",padding:20,boxSizing:"border-box"}}>
+      <div style={{maxWidth:360,width:"100%",textAlign:"center"}}>
+        <div style={{fontSize:52,marginBottom:12}}>🚫</div>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:36,color:"#d8eaff",letterSpacing:3,marginBottom:8}}>BUILDING INTEL</div>
+        <div style={{color:"#ff4d4d",fontSize:14,fontWeight:600,marginBottom:8}}>Temporarily Unavailable</div>
+        {appLocked.message&&<div style={{color:"#3a5a78",fontSize:13,marginBottom:20,lineHeight:1.5}}>{appLocked.message}</div>}
+        <div style={{color:"#1e3a5c",fontSize:11,fontFamily:"'JetBrains Mono',monospace",marginBottom:16}}>Admin access only at this time</div>
+        <input value={authInput} onChange={e=>{setAuthInput(e.target.value);setAuthError("");}}
+          onKeyDown={e=>e.key==="Enter"&&tryAuth(authInput)}
+          type="password" placeholder="Admin code to bypass"
+          style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:`1px solid ${authError?"#ff4d4d":"#1e3a5c"}`,borderRadius:10,color:"#b8d4f0",padding:"12px 18px",fontSize:14,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:8,textAlign:"center",letterSpacing:3}}/>
+        {authError&&<div style={{color:"#ff4d4d",fontSize:11,marginBottom:8}}>{authError}</div>}
+        <button onClick={()=>tryAuth(authInput)} style={{width:"100%",background:"#1e3a5c",border:"none",borderRadius:10,color:"#8ab0cc",padding:"12px",cursor:"pointer",fontFamily:"'Bebas Neue',sans-serif",fontSize:16,letterSpacing:2}}>
+          ADMIN BYPASS
+        </button>
+      </div>
+    </div>
+  );
+
+  if (authMode === "locked") return (
+    <div style={{display:"flex",height:"100vh",background:"#060d18",alignItems:"center",justifyContent:"center",fontFamily:"'Figtree',sans-serif",padding:20,boxSizing:"border-box"}}>
+      <div style={{maxWidth:360,width:"100%",textAlign:"center"}}>
+        <div style={{fontSize:52,marginBottom:12}}>🔒</div>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:36,color:"#d8eaff",letterSpacing:3,marginBottom:4}}>BUILDING INTEL</div>
+        <div style={{color:"#1e3a5c",fontSize:12,fontFamily:"'JetBrains Mono',monospace",marginBottom:32}}>Enter your access code to continue</div>
+        <input value={authInput} onChange={e=>{setAuthInput(e.target.value);setAuthError("");}}
+          onKeyDown={e=>e.key==="Enter"&&tryAuth(authInput)}
+          type="password" placeholder="Access code"
+          style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:`1px solid ${authError?"#ff4d4d":"#1e3a5c"}`,borderRadius:10,color:"#b8d4f0",padding:"14px 18px",fontSize:16,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:10,textAlign:"center",letterSpacing:4}}
+          autoFocus/>
+        {authError&&<div style={{color:"#ff4d4d",fontSize:12,marginBottom:10}}>{authError}</div>}
+        <button onClick={()=>tryAuth(authInput)} style={{width:"100%",background:"linear-gradient(135deg,#ff6b35,#e55a26)",border:"none",borderRadius:10,color:"#fff",padding:"14px",cursor:"pointer",fontFamily:"'Bebas Neue',sans-serif",fontSize:18,letterSpacing:2}}>
+          UNLOCK
+        </button>
+      </div>
+    </div>
+  );
 
   // ════════════════════════════════════════════════════════════════════════════
   // LOADING SCREEN
@@ -640,6 +970,26 @@ export default function App() {
       <div ref={mapRef} style={{position:"absolute",inset:0,zIndex:0}}
         onClick={()=>setDrawerOpen(false)}/>
 
+      {/* ══ LOCATION AGREEMENT MODAL ════════════════════════════════════════ */}
+      {showLocModal&&(
+        <div style={{position:"fixed",inset:0,zIndex:3000,background:"rgba(0,0,0,.8)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div style={{background:"#0c1828",border:"1px solid #1e3a5c",borderRadius:16,padding:"24px 22px",maxWidth:340,width:"100%",fontFamily:"'Figtree',sans-serif"}}>
+            <div style={{fontSize:36,textAlign:"center",marginBottom:10}}>📍</div>
+            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:"#d8eaff",letterSpacing:2,textAlign:"center",marginBottom:10}}>LOCATION SERVICES</div>
+            <div style={{color:"#3a5a78",fontSize:13,lineHeight:1.6,marginBottom:16,textAlign:"center"}}>
+              This app would like to record your GPS location when you access it. Your coordinates will be logged and visible to the app administrator.
+            </div>
+            <div style={{background:"#07101e",borderRadius:8,padding:"10px 12px",marginBottom:18}}>
+              <div style={{color:"#2a4a6a",fontSize:11,lineHeight:1.5}}>By tapping <strong style={{color:"#ff6b35"}}>Agree</strong>, you consent to your location being logged each time you open this app.</div>
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={agreeLocation} style={{flex:2,background:"#ff6b35",border:"none",borderRadius:10,color:"#fff",padding:"13px",cursor:"pointer",fontFamily:"'Bebas Neue',sans-serif",fontSize:16,letterSpacing:1.5}}>AGREE</button>
+              <button onClick={declineLocation} style={{flex:1,background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:10,color:"#3a5a78",padding:"13px",cursor:"pointer",fontSize:13}}>Decline</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ══ TOP BAR ════════════════════════════════════════════════════════════ */}
       <div style={{
         position:"absolute",top:0,left:0,right:0,zIndex:800,
@@ -681,41 +1031,260 @@ export default function App() {
         <div onClick={e=>e.stopPropagation()} style={{
           position:"absolute",top:60,right:12,zIndex:1200,
           background:"#0c1828",border:"1px solid #1e3a5c",
-          borderRadius:14,padding:"18px 20px",width:290,
-          boxShadow:"0 8px 32px rgba(0,0,0,.7)"
+          borderRadius:14,width:320,maxHeight:"80vh",display:"flex",flexDirection:"column",
+          boxShadow:"0 8px 32px rgba(0,0,0,.8)"
         }}>
-          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:"#d8eaff",letterSpacing:2,marginBottom:4}}>SETTINGS</div>
-
-          {/* API Key */}
-          <div style={{marginBottom:14}}>
-            <label style={{display:"block",color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.5,marginBottom:6}}>
-              ANTHROPIC API KEY <span style={{color:"#ff6b35"}}>(required for News Scan)</span>
-            </label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={e=>{setApiKey(e.target.value);localStorage.setItem("bi-apikey",e.target.value);}}
-              placeholder="sk-ant-..."
-              style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#b8d4f0",padding:"9px 12px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none"}}
-            />
-            <div style={{color:"#1e3a5c",fontSize:10,marginTop:5,lineHeight:1.5}}>
-              Get a key at <a href="https://console.anthropic.com" target="_blank" style={{color:"#3a6aaa"}}>console.anthropic.com</a> → API Keys. Stored only on your device.
+          {/* Settings header + tabs */}
+          <div style={{padding:"14px 18px 0",flexShrink:0}}>
+            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:"#d8eaff",letterSpacing:2,marginBottom:10}}>⚙️ SETTINGS</div>
+            <div style={{display:"flex",gap:0,borderBottom:"1px solid #0f2035",marginBottom:0}}>
+              {([["general","General"],["import","Import/Export"],["access","Access"],...(isAdmin?[["dashboard","Dashboard"]]:[])])
+                .map(([id,lbl])=>(
+                <button key={id} onClick={()=>{setSettingsTab(id);if(id==="dashboard")fetchLogs();}} style={{
+                  flex:1,padding:"7px 2px",background:"transparent",border:"none",
+                  borderBottom:settingsTab===id?"2px solid #ff6b35":"2px solid transparent",
+                  color:settingsTab===id?"#d8eaff":"#2a4a6a",fontSize:9,
+                  fontFamily:"'JetBrains Mono',monospace",cursor:"pointer",letterSpacing:.3
+                }}>{lbl}</button>
+              ))}
             </div>
           </div>
 
-          {/* Overlay note */}
-          <div style={{background:"#07101e",border:"1px solid #0f2035",borderRadius:8,padding:"10px 12px",marginBottom:14}}>
-            <div style={{color:"#ff6b35",fontSize:11,fontWeight:700,marginBottom:4}}>📍 About the floating button</div>
-            <div style={{color:"#2a4a6a",fontSize:11,lineHeight:1.5}}>
-              Android apps can't float over other apps unless they're native — PWA web apps like this one can't do a true system overlay. Best approach while driving: keep Building Intel open, use your car's navigation separately (Google Maps on dashboard), and tap 📍 when you spot something.
-            </div>
+          {/* Tab content */}
+          <div style={{flex:1,overflowY:"auto",padding:"14px 18px"}}>
+
+            {/* ── GENERAL TAB ── */}
+            {settingsTab==="general"&&(
+              <div>
+                <label style={{display:"block",color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.5,marginBottom:5}}>
+                  ANTHROPIC API KEY <span style={{color:"#ff6b35"}}>(News Scan)</span>
+                </label>
+                <input type="password" value={apiKey}
+                  onChange={e=>{setApiKey(e.target.value);localStorage.setItem("bi-apikey",e.target.value);}}
+                  placeholder="sk-ant-..." style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#b8d4f0",padding:"9px 12px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:5}}/>
+                <div style={{color:"#1e3a5c",fontSize:10,marginBottom:14,lineHeight:1.5}}>
+                  Get at <a href="https://console.anthropic.com" target="_blank" style={{color:"#3a6aaa"}}>console.anthropic.com</a> → API Keys
+                </div>
+
+                <div style={{background:"#07101e",border:"1px solid #0f2035",borderRadius:8,padding:"10px 12px"}}>
+                  <div style={{color:"#ff6b35",fontSize:11,fontWeight:700,marginBottom:3}}>📍 Floating button note</div>
+                  <div style={{color:"#2a4a6a",fontSize:11,lineHeight:1.5}}>PWA apps can't overlay other apps. Keep Building Intel open while driving and tap 📍 to save your spot.</div>
+                </div>
+              </div>
+            )}
+
+            {/* ── IMPORT / EXPORT TAB ── */}
+            {settingsTab==="import"&&(
+              <div>
+                {/* KMZ Import */}
+                <div style={{background:"#07101e",border:"1px solid #1e3a5c",borderRadius:10,padding:"12px 14px",marginBottom:12}}>
+                  <div style={{color:"#ff6b35",fontSize:12,fontWeight:700,marginBottom:8}}>🗺 Import My Maps (KMZ)</div>
+                  <div style={{color:"#2a4a6a",fontSize:11,lineHeight:1.6,marginBottom:10}}>
+                    <strong style={{color:"#3a5a78"}}>1.</strong> Go to <a href="https://mymaps.google.com" target="_blank" style={{color:"#3a6aaa"}}>mymaps.google.com</a><br/>
+                    <strong style={{color:"#3a5a78"}}>2.</strong> Open a map → click Menu → <em>Export to KML/KMZ</em><br/>
+                    <strong style={{color:"#3a5a78"}}>3.</strong> Download the .kmz file<br/>
+                    <strong style={{color:"#3a5a78"}}>4.</strong> Upload it below
+                  </div>
+                  <input value={kmzListName} onChange={e=>setKmzListName(e.target.value)}
+                    placeholder="Layer name (e.g. My Map Pins)"
+                    style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:7,color:"#b8d4f0",padding:"7px 10px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:8}}/>
+                  <label style={{display:"block",background:"#ff6b35",borderRadius:7,color:"#fff",padding:"8px",textAlign:"center",cursor:"pointer",fontSize:12,fontWeight:700}}>
+                    {kmzImporting?"⏳ Importing…":"📂 Choose .kmz or .kml file"}
+                    <input type="file" accept=".kmz,.kml" style={{display:"none"}} onChange={e=>{if(e.target.files[0])handleKMZImport(e.target.files[0]);}}/>
+                  </label>
+                </div>
+
+                {/* Takeout Import */}
+                <div style={{background:"#07101e",border:"1px solid #1e3a5c",borderRadius:10,padding:"12px 14px",marginBottom:12}}>
+                  <div style={{color:"#42a5f5",fontSize:12,fontWeight:700,marginBottom:8}}>📦 Import Saved Places (Takeout ZIP)</div>
+                  <div style={{color:"#2a4a6a",fontSize:11,lineHeight:1.6,marginBottom:10}}>
+                    <strong style={{color:"#3a5a78"}}>1.</strong> Go to <a href="https://takeout.google.com" target="_blank" style={{color:"#3a6aaa"}}>takeout.google.com</a><br/>
+                    <strong style={{color:"#3a5a78"}}>2.</strong> Click <em>Deselect all</em> at top<br/>
+                    <strong style={{color:"#3a5a78"}}>3.</strong> Check only <strong>Saved</strong><br/>
+                    <strong style={{color:"#3a5a78"}}>4.</strong> Next step → Create export<br/>
+                    <strong style={{color:"#3a5a78"}}>5.</strong> Download the .zip from email<br/>
+                    <strong style={{color:"#3a5a78"}}>6.</strong> Upload below
+                  </div>
+                  <label style={{display:"block",background:"#42a5f5",borderRadius:7,color:"#fff",padding:"8px",textAlign:"center",cursor:"pointer",fontSize:12,fontWeight:700}}>
+                    📂 Choose Takeout .zip file
+                    <input type="file" accept=".zip" style={{display:"none"}} onChange={e=>{if(e.target.files[0]){setShowSettings(false);handleFile(e.target.files[0]);}}}/>
+                  </label>
+                </div>
+
+                {/* Export */}
+                <div style={{background:"#07101e",border:"1px solid #1e3a5c",borderRadius:10,padding:"12px 14px"}}>
+                  <div style={{color:"#4ade80",fontSize:12,fontWeight:700,marginBottom:6}}>💾 Export All Pins</div>
+                  <div style={{color:"#2a4a6a",fontSize:11,marginBottom:10}}>Downloads a ZIP with CSVs of all your lists, roadside finds, and news results.</div>
+                  <button onClick={()=>exportAllPins(lists,roadsidePins,newsResults)} style={{width:"100%",background:"#4ade80",border:"none",borderRadius:7,color:"#003300",padding:"9px",cursor:"pointer",fontWeight:700,fontSize:12}}>
+                    ⬇ Download Export ZIP
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── ACCESS CONTROL TAB ── */}
+            {settingsTab==="access"&&(
+              <div>
+                {!isAdmin&&(
+                  <div style={{background:"#1a0505",border:"1px solid #ff4d4d33",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+                    <div style={{color:"#ff4d4d",fontSize:11}}>⚠️ Admin access required to change these settings</div>
+                  </div>
+                )}
+
+                {/* Admin code */}
+                <label style={{display:"block",color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.5,marginBottom:5}}>YOUR ADMIN CODE</label>
+                <input type="password" value={adminCode} disabled={!isAdmin}
+                  onChange={e=>{setAdminCode(e.target.value);localStorage.setItem("bi-admin-code",e.target.value);}}
+                  placeholder="Set your admin password"
+                  style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#b8d4f0",padding:"9px 12px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:4,opacity:isAdmin?1:.5}}/>
+                <div style={{color:"#1e3a5c",fontSize:10,marginBottom:12}}>Your private password. Never share this.</div>
+
+                {/* Viewer code explanation */}
+                <div style={{background:"#07101e",border:"1px solid #1e3a5c",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+                  <div style={{color:"#ff6b35",fontSize:11,fontWeight:700,marginBottom:4}}>🔑 Viewer Code (for sharing)</div>
+                  <div style={{color:"#2a4a6a",fontSize:11,lineHeight:1.6}}>
+                    Current viewer code: <strong style={{color:"#b8d4f0",fontFamily:"'JetBrains Mono',monospace"}}>{VIEWER_CODE}</strong><br/>
+                    To change it: edit line 6 of <code style={{color:"#ff6b35"}}>src/App.jsx</code> in GitHub.<br/>
+                    Viewers can see the map but cannot access Settings or delete pins.
+                  </div>
+                </div>
+
+                {/* ntfy tracking */}
+                <label style={{display:"block",color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.5,marginBottom:5}}>ACCESS NOTIFICATION TOPIC</label>
+                <input value={ntfyTopic} disabled={!isAdmin}
+                  onChange={e=>{setNtfyTopic(e.target.value);localStorage.setItem("bi-ntfy",e.target.value);}}
+                  placeholder="your-unique-topic-name"
+                  style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#b8d4f0",padding:"9px 12px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:4,opacity:isAdmin?1:.5}}/>
+                <div style={{color:"#1e3a5c",fontSize:10,marginBottom:12,lineHeight:1.5}}>
+                  Free push notifications via <a href="https://ntfy.sh" target="_blank" style={{color:"#3a6aaa"}}>ntfy.sh</a>. Install the ntfy app → subscribe to this topic → get notified every time someone opens your app.
+                </div>
+
+                {/* Admin API token */}
+                <label style={{display:"block",color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.5,marginBottom:5}}>ADMIN API TOKEN</label>
+                <input value={adminToken} disabled={!isAdmin}
+                  onChange={e=>{setAdminToken(e.target.value);localStorage.setItem("bi-admin-token",e.target.value);}}
+                  placeholder="Set in Vercel env: ADMIN_TOKEN"
+                  style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#b8d4f0",padding:"9px 12px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:4,opacity:isAdmin?1:.5}}/>
+                <div style={{color:"#1e3a5c",fontSize:10,marginBottom:14,lineHeight:1.5}}>Must match the ADMIN_TOKEN environment variable set in Vercel. Required to lock/unlock app and view GPS logs.</div>
+
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>{sessionStorage.setItem("bi-auth","admin");setAuthMode("admin");}} style={{flex:1,background:"#0b1828",border:"1px solid #ff6b35",borderRadius:7,color:"#ff6b35",padding:"8px",cursor:"pointer",fontSize:11}}>Switch to Admin</button>
+                  <button onClick={()=>{sessionStorage.removeItem("bi-auth");setAuthMode("locked");setShowSettings(false);}} style={{flex:1,background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:7,color:"#3a5a78",padding:"8px",cursor:"pointer",fontSize:11}}>Log Out</button>
+                </div>
+              </div>
+            )}
+
+            {/* ── DASHBOARD TAB (admin only) ── */}
+            {settingsTab==="dashboard"&&isAdmin&&(
+              <div>
+                {/* Lock toggle */}
+                <div style={{background:"#07101e",border:`1px solid ${appLocked.locked?"#ff4d4d":"#00e67633"}`,borderRadius:10,padding:"12px 14px",marginBottom:12}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                    <div style={{color:appLocked.locked?"#ff4d4d":"#00c853",fontSize:13,fontWeight:700}}>
+                      {appLocked.locked?"🔒 APP LOCKED":"🔓 APP UNLOCKED"}
+                    </div>
+                    <button onClick={()=>toggleLock(!appLocked.locked)} disabled={lockingApp} style={{
+                      background:appLocked.locked?"#00e676":"#ff4d4d",
+                      border:"none",borderRadius:8,
+                      color:appLocked.locked?"#003300":"#fff",
+                      padding:"7px 14px",cursor:"pointer",fontWeight:700,fontSize:12
+                    }}>{lockingApp?"…":appLocked.locked?"Unlock Now":"Lock Now"}</button>
+                  </div>
+                  <input value={lockMsg} onChange={e=>setLockMsg(e.target.value)}
+                    placeholder="Lock message shown to users…"
+                    style={{width:"100%",boxSizing:"border-box",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:7,color:"#b8d4f0",padding:"7px 10px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none"}}/>
+                </div>
+
+                {/* User roles summary */}
+                <div style={{display:"flex",gap:6,marginBottom:12}}>
+                  {[["Admin","#ff6b35"],["Editor","#a78bfa"],["Viewer","#42a5f5"]].map(([r,c])=>(
+                    <div key={r} style={{flex:1,background:"#07101e",border:`1px solid ${c}33`,borderRadius:8,padding:"8px",textAlign:"center"}}>
+                      <div style={{color:c,fontSize:10,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",letterSpacing:.5}}>{r.toUpperCase()}</div>
+                      <div style={{color:"#1e3a5c",fontSize:10,marginTop:3}}>
+                        {r==="Admin"?"Full access":r==="Editor"?"Edit pins":"View only"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Codes quick reference */}
+                <div style={{background:"#07101e",border:"1px solid #1e3a5c",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+                  <div style={{color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.2,marginBottom:6}}>CURRENT ACCESS CODES</div>
+                  {[["Editor",EDITOR_CODE,"#a78bfa"],["Viewer",VIEWER_CODE,"#42a5f5"]].map(([r,c,col])=>(
+                    <div key={r} style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                      <span style={{color:"#2a4a6a",fontSize:11}}>{r}</span>
+                      <span style={{color:col,fontFamily:"'JetBrains Mono',monospace",fontSize:11}}>{c}</span>
+                    </div>
+                  ))}
+                  <div style={{color:"#1e3a5c",fontSize:10,marginTop:6}}>Change codes by editing lines 6–7 of src/App.jsx in GitHub</div>
+                </div>
+
+                {/* Access log */}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <span style={{color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.2}}>RECENT ACCESS LOG</span>
+                  <button onClick={fetchLogs} style={{background:"none",border:"1px solid #1e3a5c",borderRadius:5,color:"#2a4a6a",fontSize:10,cursor:"pointer",padding:"2px 8px",fontFamily:"'JetBrains Mono',monospace"}}>
+                    {logsLoading?"…":"Refresh"}
+                  </button>
+                </div>
+
+                {!adminToken&&(
+                  <div style={{color:"#ff4d4d",fontSize:11,marginBottom:8,fontFamily:"'JetBrains Mono',monospace"}}>⚠️ Set Admin API Token in Access tab to view logs</div>
+                )}
+
+                {accessLogs.length===0&&!logsLoading&&adminToken&&(
+                  <div style={{color:"#1e3a5c",fontSize:11,textAlign:"center",padding:"16px 0"}}>No logs yet</div>
+                )}
+
+                {accessLogs.slice(0,20).map((log,i)=>{
+                  const roleColor = log.role==="admin"?"#ff6b35":log.role==="editor"?"#a78bfa":"#42a5f5";
+                  const dt = log.timestamp ? new Date(log.timestamp).toLocaleString() : "unknown";
+                  return(
+                    <div key={i} style={{background:"#07101e",border:"1px solid #0f1e30",borderRadius:8,padding:"9px 11px",marginBottom:5}}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                        <span style={{background:`${roleColor}22`,color:roleColor,fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,fontFamily:"'JetBrains Mono',monospace"}}>{(log.role||"?").toUpperCase()}</span>
+                        <span style={{color:"#1e3a5c",fontSize:10,fontFamily:"'JetBrains Mono',monospace"}}>{dt}</span>
+                      </div>
+                      {log.lat&&(
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:2}}>
+                          <span style={{color:"#00c853",fontSize:10,fontFamily:"'JetBrains Mono',monospace"}}>
+                            📍 {(+log.lat).toFixed(4)}, {(+log.lng).toFixed(4)}
+                            {log.accuracy?` ±${log.accuracy}m`:""}
+                          </span>
+                          <button onClick={()=>{
+                            if(leafletMap.current){leafletMap.current.flyTo([+log.lat,+log.lng],15,{duration:1.2});}
+                            setShowSettings(false);
+                          }} style={{background:"none",border:"none",color:"#1a73e8",fontSize:10,cursor:"pointer"}}>
+                            View →
+                          </button>
+                        </div>
+                      )}
+                      {!log.lat&&<div style={{color:"#1e3a5c",fontSize:10}}>📍 GPS not shared</div>}
+                      <div style={{color:"#1a3050",fontSize:9,fontFamily:"'JetBrains Mono',monospace",marginTop:2}}>{log.device}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
-          <button onClick={()=>setShowSettings(false)} style={{
-            width:"100%",background:"#ff6b35",border:"none",borderRadius:8,
-            color:"#fff",padding:"10px",cursor:"pointer",
-            fontFamily:"'Bebas Neue',sans-serif",fontSize:15,letterSpacing:2
-          }}>DONE</button>
+          <div style={{padding:"12px 18px",borderTop:"1px solid #0f2035",flexShrink:0}}>
+            <button onClick={()=>setShowSettings(false)} style={{width:"100%",background:"#ff6b35",border:"none",borderRadius:8,color:"#fff",padding:"10px",cursor:"pointer",fontFamily:"'Bebas Neue',sans-serif",fontSize:15,letterSpacing:2}}>DONE</button>
+          </div>
+        </div>
+      )}
+
+      {/* ══ CLICK TO PLACE OVERLAY ═══════════════════════════════════════════ */}
+      {clickToPlace&&(
+        <div style={{position:"absolute",inset:0,zIndex:1700,cursor:"crosshair",pointerEvents:"all"}}
+          onClick={e=>e.stopPropagation()}>
+          <div style={{position:"absolute",top:70,left:"50%",transform:"translateX(-50%)",
+            background:"rgba(6,13,24,.92)",border:"1px solid #00e676",borderRadius:12,
+            padding:"10px 24px",textAlign:"center",backdropFilter:"blur(8px)"}}>
+            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:"#00e676",letterSpacing:1.5}}>TAP THE BUILDING ON THE MAP</div>
+            <div style={{color:"#3a5a78",fontSize:11,fontFamily:"'JetBrains Mono',monospace"}}>Tap anywhere to drop a pin there</div>
+            <button onClick={()=>{setClickToPlace(false);setDrawerOpen(true);}} style={{marginTop:8,background:"#1e3a5c",border:"none",borderRadius:6,color:"#3a5a78",padding:"4px 14px",cursor:"pointer",fontSize:11}}>Cancel</button>
+          </div>
+          <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",pointerEvents:"none",fontSize:40}}>＋</div>
         </div>
       )}
 
@@ -975,6 +1544,33 @@ export default function App() {
                           <button onClick={skipGeocodeResult} style={{width:"100%",background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:8,color:"#3a5a78",padding:"10px",cursor:"pointer",fontSize:13}}>
                             Skip →
                           </button>
+                        </div>
+                      )}
+
+                      {/* Manual address search */}
+                      {!geocodeState.loading&&(
+                        <div style={{marginTop:10,borderTop:"1px solid #0f2035",paddingTop:10}}>
+                          <div style={{color:"#2a4a6a",fontSize:10,fontFamily:"'JetBrains Mono',monospace",letterSpacing:1.2,marginBottom:6}}>MANUAL SEARCH</div>
+                          <div style={{display:"flex",gap:6,marginBottom:6}}>
+                            <input value={manualAddrInput} onChange={e=>setManualAddrInput(e.target.value)}
+                              onKeyDown={e=>e.key==="Enter"&&manualAddrInput.trim()&&geocodeManualAddress(manualAddrInput)}
+                              placeholder="Type address, city, or name…"
+                              style={{flex:1,background:"#0b1828",border:"1px solid #1e3a5c",borderRadius:7,color:"#b8d4f0",padding:"7px 10px",fontSize:12,fontFamily:"'JetBrains Mono',monospace",outline:"none"}}/>
+                            <button onClick={()=>manualAddrInput.trim()&&geocodeManualAddress(manualAddrInput)} disabled={searchingAddr}
+                              style={{background:"#ff6b35",border:"none",borderRadius:7,color:"#fff",padding:"7px 10px",cursor:"pointer",fontSize:12,fontWeight:700,whiteSpace:"nowrap"}}>
+                              {searchingAddr?"…":"Search"}
+                            </button>
+                          </div>
+                          <div style={{display:"flex",gap:6}}>
+                            {apiKey&&<button onClick={()=>manualAddrInput.trim()&&searchAddressViaAPI(manualAddrInput||geocodeState.pending?.[geocodeState.index]?.title)} disabled={searchingAddr}
+                              style={{flex:1,background:"#0b1828",border:"1px solid #a78bfa55",borderRadius:7,color:"#a78bfa",padding:"6px",cursor:"pointer",fontSize:11}}>
+                              🌐 Web Search
+                            </button>}
+                            <button onClick={enterClickToPlace}
+                              style={{flex:1,background:"#0b1828",border:"1px solid #00e67655",borderRadius:7,color:"#00c853",padding:"6px",cursor:"pointer",fontSize:11}}>
+                              📍 Tap Map to Place
+                            </button>
+                          </div>
                         </div>
                       )}
                     </>
